@@ -1,7 +1,7 @@
 #Copyright (c) Microsoft. All rights reserved.
 #Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-cmake_minimum_required(VERSION 2.8.11)
+cmake_minimum_required(VERSION 3.12)
 
 # quiet the CMake warning about unused command line args "use_wsio". This is from the c-utility CMake command.
 set(ignore_me ${use_wsio})

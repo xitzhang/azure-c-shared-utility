@@ -2,7 +2,7 @@
 #Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 #this is CMakeLists.txt for httpheaders_ut
-cmake_minimum_required(VERSION 2.8.11)
+cmake_minimum_required(VERSION 3.12)
 
 if(NOT ${use_http})
 	message(FATAL_ERROR "httpheaders_ut being generated without HTTP support")
