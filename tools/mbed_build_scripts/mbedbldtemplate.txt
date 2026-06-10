@@ -7,7 +7,7 @@
 ### To use add -Drelease_the_project:bool=ON
 option(release_the_project "Used to just push the project and adjust the appending of _bld" off)
 
-cmake_minimum_required(VERSION 2.8.11)
+cmake_minimum_required(VERSION 3.12)
 set(HG_COMMIT_MSG "Automatic Build Commit" CACHE STRING "Passed to the mercurial commit")
 
 project(${mbed_project_base})
