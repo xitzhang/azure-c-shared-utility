@@ -2400,7 +2400,6 @@ TEST_SUITE_CLEANUP(b)
             ASSERT_ARE_EQUAL(int, EINVAL, result);
         }
 
-        /*http://vstfrd:8080/Azure/RD/_workitems/edit/3216760*/
 #if 0
         // Tests_SRS_CRT_ABSTRACTIONS_99_037: [Upon failure to allocate memory for the destination, the function will return ENOMEM.]
         TEST_FUNCTION(mallocAndStrcpy_s_fails_upon_failure_to_allocate_memory)
