@@ -648,7 +648,9 @@ long double strtold_s(const char* nptr, char** endptr)
                 (exponential != (DBL_MAX_10_EXP * (-1)) || (fraction <= 2.2250738585072014)))
             {
                 /*Codes_SRS_CRT_ABSTRACTIONS_21_026: [The strtold_s must return the long double that represents the value in the initial part of the string. If any.]*/
-                result = fraction * pow(10.0, (double)exponential) * (double)signal;
+                /* Perform the scaling in long double so the multiplication does not overflow or
+                   lose precision in double before being converted to the long double result. */
+                result = (long double)fraction * powl(10.0L, (long double)exponential) * (long double)signal;
             }
             else
             {
