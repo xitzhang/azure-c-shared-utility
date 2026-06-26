@@ -9,6 +9,7 @@
 #include "azure_c_shared_utility/buffer_.h"
 #include "azure_c_shared_utility/optimize_size.h"
 #include "azure_c_shared_utility/xlogging.h"
+#include "azure_c_shared_utility/safe_math.h"
 
 typedef struct BUFFER_TAG
 {
@@ -196,11 +197,13 @@ int BUFFER_append_build(BUFFER_HANDLE handle, const unsigned char* source, size_
         else
         {
             /* Codes_SRS_BUFFER_07_032: [ if handle->buffer is not NULL BUFFER_append_build shall realloc the buffer to be the handle->size + size ] */
-            unsigned char* temp = (unsigned char*)realloc(handle->buffer, handle->size + size);
-            if (temp == NULL)
+            unsigned char* temp = NULL;
+            size_t malloc_size = safe_add_size_t(handle->size, size);
+            if (malloc_size == SIZE_MAX ||
+                (temp = (unsigned char*)realloc(handle->buffer, malloc_size)) == NULL)
             {
                 /* Codes_SRS_BUFFER_07_035: [ If any error is encountered BUFFER_append_build shall return a non-null value. ] */
-                LogError("Failure reallocating temporary buffer");
+                LogError("Failure reallocating temporary buffer, size:%zu", malloc_size);
                 result = __FAILURE__;
             }
             else
@@ -327,12 +330,14 @@ int BUFFER_enlarge(BUFFER_HANDLE handle, size_t enlargeSize)
     }
     else
     {
+        unsigned char* temp = NULL;
         BUFFER* b = (BUFFER*)handle;
-        unsigned char* temp = (unsigned char*)realloc(b->buffer, b->size + enlargeSize);
-        if (temp == NULL)
+        size_t malloc_size = safe_add_size_t(b->size, enlargeSize);
+        if (malloc_size == SIZE_MAX ||
+            (temp = (unsigned char*)realloc(b->buffer, malloc_size)) == NULL)
         {
             /* Codes_SRS_BUFFER_07_018: [BUFFER_enlarge shall return a nonzero result if any error is encountered.] */
-            LogError("Failure: allocating temp buffer.");
+            LogError("Failure: allocating temp buffer, size:%zu", malloc_size);
             result = __FAILURE__;
         }
         else
@@ -464,11 +469,13 @@ int BUFFER_append(BUFFER_HANDLE handle1, BUFFER_HANDLE handle2)
             else
             {
                 // b2->size != 0, whatever b1->size is
-                unsigned char* temp = (unsigned char*)realloc(b1->buffer, b1->size + b2->size);
-                if (temp == NULL)
+                unsigned char* temp = NULL;
+                size_t malloc_size = safe_add_size_t(b1->size, b2->size);
+                if (malloc_size == SIZE_MAX ||
+                    (temp = (unsigned char*)realloc(b1->buffer, malloc_size)) == NULL)
                 {
                     /* Codes_SRS_BUFFER_07_023: [BUFFER_append shall return a nonzero upon any error that is encountered.] */
-                    LogError("Failure: allocating temp buffer.");
+                    LogError("Failure: allocating temp buffer, size:%zu", malloc_size);
                     result = __FAILURE__;
                 }
                 else
@@ -519,11 +526,13 @@ int BUFFER_prepend(BUFFER_HANDLE handle1, BUFFER_HANDLE handle2)
             else
             {
                 // b2->size != 0
-                unsigned char* temp = (unsigned char*)malloc(b1->size + b2->size + 1);
-                if (temp == NULL)
+                unsigned char* temp = NULL;
+                size_t malloc_size = safe_add_size_t(safe_add_size_t(b1->size, b2->size), 1);
+                if (malloc_size == SIZE_MAX ||
+                    (temp = (unsigned char*)malloc(malloc_size)) == NULL)
                 {
                     /* Codes_SRS_BUFFER_01_005: [ BUFFER_prepend shall return a non-zero upon value any error that is encountered. ]*/
-                    LogError("Failure: allocating temp buffer.");
+                    LogError("Failure: allocating temp buffer, size:%zu", malloc_size);
                     result = __FAILURE__;
                 }
                 else

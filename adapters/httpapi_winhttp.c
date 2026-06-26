@@ -15,6 +15,7 @@
 #include "azure_c_shared_utility/strings.h"
 #include "azure_c_shared_utility/x509_schannel.h"
 #include "azure_c_shared_utility/shared_util_options.h"
+#include "azure_c_shared_utility/safe_math.h"
 
 DEFINE_ENUM_STRINGS(HTTPAPI_RESULT, HTTPAPI_RESULT_VALUES)
 
@@ -83,7 +84,17 @@ static const char* ConstructHeadersString(HTTP_HEADERS_HANDLE httpHeadersHandle)
         }
         else
         {
-            result = (char*)malloc(toAlloc*sizeof(char) + 1 );
+            size_t malloc_size = safe_multiply_size_t(toAlloc, sizeof(char));
+            malloc_size = safe_add_size_t(malloc_size, 1);
+            if (malloc_size == SIZE_MAX)
+            {
+                LogError("Invalid malloc size");
+                result = NULL;
+            }
+            else
+            {
+                result = (char*)malloc(malloc_size);
+            }
 
             if (result == NULL)
             {
@@ -203,7 +214,17 @@ HTTP_HANDLE HTTPAPI_CreateConnection(const char* hostName)
             }
             else
             {
-                hostNameTemp = (wchar_t*)malloc(sizeof(wchar_t)*hostNameTemp_size);
+                size_t malloc_size = safe_multiply_size_t(sizeof(wchar_t), hostNameTemp_size);
+                if (malloc_size == SIZE_MAX)
+                {
+                    LogError("Invalid malloc size");
+                    hostNameTemp = NULL;
+                }
+                else
+                {
+                    hostNameTemp = (wchar_t*)malloc(malloc_size);
+                }
+
                 if (hostNameTemp == NULL)
                 {
                     LogError("malloc failed");
@@ -352,8 +373,20 @@ HTTPAPI_RESULT HTTPAPI_ExecuteRequest(HTTP_HANDLE handle, HTTPAPI_REQUEST_TYPE r
                 if (headers2 != NULL)
                 {
                     size_t requiredCharactersForRelativePath = MultiByteToWideChar(CP_ACP, 0, relativePath, -1, NULL, 0);
-                    wchar_t* relativePathTemp = (wchar_t*)malloc((requiredCharactersForRelativePath+1) * sizeof(wchar_t));
+                    wchar_t* relativePathTemp = NULL;
                     result = HTTPAPI_OK; /*legacy code*/
+
+                    size_t malloc_size = safe_add_size_t(requiredCharactersForRelativePath, 1);
+                    malloc_size = safe_multiply_size_t(malloc_size, sizeof(wchar_t));
+                    if (malloc_size == SIZE_MAX)
+                    {
+                        LogError("Invalid malloc size");
+                        relativePathTemp = NULL;
+                    }
+                    else
+                    {
+                        relativePathTemp = (wchar_t*)malloc(malloc_size);
+                    }
 
                     if (relativePathTemp == NULL)
                     {
@@ -370,8 +403,20 @@ HTTPAPI_RESULT HTTPAPI_ExecuteRequest(HTTP_HANDLE handle, HTTPAPI_REQUEST_TYPE r
                         else
                         {
                             size_t requiredCharactersForHeaders = MultiByteToWideChar(CP_ACP, 0, headers2, -1, NULL, 0);
+                            wchar_t* headersTemp = NULL;
 
-                            wchar_t* headersTemp = (wchar_t*)malloc((requiredCharactersForHeaders +1) * sizeof(wchar_t) );
+                            size_t malloc_size = safe_add_size_t(requiredCharactersForHeaders, 1);
+                            malloc_size = safe_multiply_size_t(malloc_size, sizeof(wchar_t));
+                            if (malloc_size == SIZE_MAX)
+                            {
+                                LogError("Invalid malloc size");
+                                headersTemp = NULL;
+                            }
+                            else
+                            {
+                                headersTemp = (wchar_t*)malloc(malloc_size);
+                            }
+
                             if (headersTemp == NULL)
                             {
                                 result = HTTPAPI_STRING_PROCESSING_ERROR;
@@ -656,7 +701,17 @@ HTTPAPI_RESULT HTTPAPI_ExecuteRequest(HTTP_HANDLE handle, HTTPAPI_REQUEST_TYPE r
                                                                         &responseHeadersTempLength,
                                                                         WINHTTP_NO_HEADER_INDEX);
 
-                                                                    responseHeadersTemp = (wchar_t*)malloc(responseHeadersTempLength + 2);
+                                                                    size_t malloc_size = safe_add_size_t(responseHeadersTempLength, 2);
+                                                                    if (malloc_size == SIZE_MAX)
+                                                                    {
+                                                                        LogError("Invalid malloc size");
+                                                                        responseHeadersTemp = NULL;
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        responseHeadersTemp = (wchar_t*)malloc(malloc_size);
+                                                                    }
+
                                                                     if (responseHeadersTemp == NULL)
                                                                     {
                                                                         result = HTTPAPI_ALLOC_FAILED;
@@ -687,7 +742,17 @@ HTTPAPI_RESULT HTTPAPI_ExecuteRequest(HTTP_HANDLE handle, HTTPAPI_REQUEST_TYPE r
                                                                                 }
                                                                                 else
                                                                                 {
-                                                                                    tokenTemp = (char*)malloc(sizeof(char)*tokenTemp_size);
+                                                                                    size_t malloc_size = safe_multiply_size_t(sizeof(char), tokenTemp_size);
+                                                                                    if (malloc_size == SIZE_MAX)
+                                                                                    {
+                                                                                        LogError("Invalid malloc size");
+                                                                                        tokenTemp = NULL;
+                                                                                    }
+                                                                                    else
+                                                                                    {
+                                                                                        tokenTemp = (char*)malloc(malloc_size);
+                                                                                    }
+
                                                                                     if (tokenTemp == NULL)
                                                                                     {
                                                                                         LogError("malloc failed");
