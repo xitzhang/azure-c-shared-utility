@@ -255,6 +255,67 @@ void socketio_destroy(CONCRETE_IO_HANDLE socket_io)
     }
 }
 
+// Attempt to connect to a single resolved address. On success returns 0 with the
+// socket open and non-blocking; on failure returns __FAILURE__, closes the socket,
+// sets it to INVALID_SOCKET, and records the Winsock error in *error_code.
+static int connect_to_addrinfo(SOCKET_IO_INSTANCE* socket_io_instance, ADDRINFO* addr, int* error_code)
+{
+    const char* hostname = (socket_io_instance->hostname != NULL) ? socket_io_instance->hostname : "<unknown>";
+
+    socket_io_instance->socket = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+    if (socket_io_instance->socket == INVALID_SOCKET)
+    {
+        *error_code = WSAGetLastError();
+        LogError("Failure: socket create failure %d for %s.", *error_code, hostname);
+        return __FAILURE__;
+    }
+
+    char resolved_ip[INET6_ADDRSTRLEN] = { 0 };
+    const char* resolved_ip_str = NULL;
+    if (addr->ai_family == AF_INET && addr->ai_addr != NULL)
+    {
+        struct sockaddr_in* sin = (struct sockaddr_in*)addr->ai_addr;
+        resolved_ip_str = InetNtopA(AF_INET, &sin->sin_addr, resolved_ip, sizeof(resolved_ip));
+    }
+    else if (addr->ai_family == AF_INET6 && addr->ai_addr != NULL)
+    {
+        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)addr->ai_addr;
+        resolved_ip_str = InetNtopA(AF_INET6, &sin6->sin6_addr, resolved_ip, sizeof(resolved_ip));
+    }
+
+    if (resolved_ip_str != NULL)
+    {
+        LogInfo("DNS resolved %s to %s, connecting to %s:%d", hostname, resolved_ip_str, hostname, socket_io_instance->port);
+    }
+    else
+    {
+        LogInfo("DNS resolved successfully, connecting to %s:%d", hostname, socket_io_instance->port);
+    }
+
+    if (connect(socket_io_instance->socket, addr->ai_addr, (int)addr->ai_addrlen) != 0)
+    {
+        *error_code = WSAGetLastError();
+        LogError("Failure: connect to %s:%d failed with error %d.", hostname, socket_io_instance->port, *error_code);
+        (void)closesocket(socket_io_instance->socket);
+        socket_io_instance->socket = INVALID_SOCKET;
+        return __FAILURE__;
+    }
+
+    u_long iMode = 1;
+    if (ioctlsocket(socket_io_instance->socket, FIONBIO, &iMode) != 0)
+    {
+        *error_code = WSAGetLastError();
+        LogError("Failure: ioctlsocket failure %d for %s:%d.", *error_code, hostname, socket_io_instance->port);
+        (void)closesocket(socket_io_instance->socket);
+        socket_io_instance->socket = INVALID_SOCKET;
+        return __FAILURE__;
+    }
+
+    LogInfo("TCP connection to %s:%d established successfully.", hostname, socket_io_instance->port);
+    *error_code = 0;
+    return 0;
+}
+
 int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_complete, void* on_io_open_complete_context, ON_BYTES_RECEIVED on_bytes_received, void* on_bytes_received_context, ON_IO_ERROR on_io_error, void* on_io_error_context)
 {
     int result;
@@ -287,89 +348,58 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
 
             result = 0;
         }
+        else if (socket_io_instance->hostname == NULL || socket_io_instance->hostname[0] == '\0')
+        {
+            LogError("Failure: hostname is NULL or empty");
+            result = open_result_detailed.code = __FAILURE__;
+        }
         else
         {
-            socket_io_instance->socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-            if (socket_io_instance->socket == INVALID_SOCKET)
+            char portString[16];
+            ADDRINFO addrHint = { 0 };
+            ADDRINFO* addrInfo = NULL;
+
+            addrHint.ai_family = AF_UNSPEC;   // was AF_INET: ask for A and AAAA
+            addrHint.ai_socktype = SOCK_STREAM;
+            addrHint.ai_protocol = 0;
+            sprintf(portString, "%d", socket_io_instance->port);
+            LogInfo("Starting DNS lookup for %s:%d", hostname, socket_io_instance->port);
+            int addrResult = getaddrinfo(socket_io_instance->hostname, portString, &addrHint, &addrInfo);
+            if (addrResult != 0)
             {
-                open_result_detailed.code = WSAGetLastError();
-                LogError("Failure: socket create failure %d for %s.", open_result_detailed.code, hostname);
+                open_result_detailed.code = addrResult;
+                LogError("Failure: getaddrinfo failure %d (%s) for host %s.", open_result_detailed.code, gai_strerrorA(open_result_detailed.code), hostname);
                 result = __FAILURE__;
             }
             else
             {
-                char portString[16];
-                ADDRINFO addrHint = { 0 };
-                ADDRINFO* addrInfo = NULL;
-
-                addrHint.ai_family = AF_INET;
-                addrHint.ai_socktype = SOCK_STREAM;
-                addrHint.ai_protocol = 0;
-                sprintf(portString, "%d", socket_io_instance->port);
-                LogInfo("Starting DNS lookup for %s:%d", hostname, socket_io_instance->port);
-                int addrResult = getaddrinfo(socket_io_instance->hostname, portString, &addrHint, &addrInfo);
-                if (addrResult != 0)
+                // getaddrinfo can return several addresses (e.g. AAAA then A).
+                // Try each in turn and keep the first that connects.
+                int connect_error = __FAILURE__;
+                result = __FAILURE__;
+                for (ADDRINFO* rp = addrInfo; rp != NULL; rp = rp->ai_next)
                 {
-                    open_result_detailed.code = addrResult;
-                    LogError("Failure: getaddrinfo failure %d (%s) for host %s.", open_result_detailed.code, gai_strerrorA(open_result_detailed.code), hostname);
-                    (void)closesocket(socket_io_instance->socket);
-                    socket_io_instance->socket = INVALID_SOCKET;
-                    result = __FAILURE__;
+                    if (connect_to_addrinfo(socket_io_instance, rp, &connect_error) == 0)
+                    {
+                        result = 0;
+                        break;
+                    }
+                }
+
+                if (result == 0)
+                {
+                    socket_io_instance->on_bytes_received = on_bytes_received;
+                    socket_io_instance->on_bytes_received_context = on_bytes_received_context;
+                    socket_io_instance->on_io_error = on_io_error;
+                    socket_io_instance->on_io_error_context = on_io_error_context;
+                    socket_io_instance->io_state = IO_STATE_OPEN;
                 }
                 else
                 {
-                    u_long iMode = 1;
-
-                    {
-                        char resolved_ip[INET6_ADDRSTRLEN] = { 0 };
-                        const char* resolved_ip_str = NULL;
-                        if (addrInfo != NULL && addrInfo->ai_family == AF_INET && addrInfo->ai_addr != NULL)
-                        {
-                            struct sockaddr_in* sin = (struct sockaddr_in*)addrInfo->ai_addr;
-                            resolved_ip_str = InetNtopA(AF_INET, &sin->sin_addr, resolved_ip, sizeof(resolved_ip));
-                        }
-
-                        if (resolved_ip_str != NULL)
-                        {
-                            LogInfo("DNS resolved %s to %s, connecting to %s:%d", hostname, resolved_ip_str, hostname, socket_io_instance->port);
-                        }
-                        else
-                        {
-                            LogInfo("DNS resolved successfully, connecting to %s:%d", hostname, socket_io_instance->port);
-                        }
-                    }
-                    if (connect(socket_io_instance->socket, addrInfo->ai_addr, (int)addrInfo->ai_addrlen) != 0)
-                    {
-                        open_result_detailed.code = WSAGetLastError();
-                        LogError("Failure: connect to %s:%d failed with error %d.", hostname, socket_io_instance->port, open_result_detailed.code);
-                        (void)closesocket(socket_io_instance->socket);
-                        socket_io_instance->socket = INVALID_SOCKET;
-                        result = __FAILURE__;
-                    }
-                    else if (ioctlsocket(socket_io_instance->socket, FIONBIO, &iMode) != 0)
-                    {
-                        open_result_detailed.code = WSAGetLastError();
-                        LogError("Failure: ioctlsocket failure %d for %s:%d.", open_result_detailed.code, hostname, socket_io_instance->port);
-                        (void)closesocket(socket_io_instance->socket);
-                        socket_io_instance->socket = INVALID_SOCKET;
-                        result = __FAILURE__;
-                    }
-                    else
-                    {
-                        LogInfo("TCP connection to %s:%d established successfully.", hostname, socket_io_instance->port);
-                        socket_io_instance->on_bytes_received = on_bytes_received;
-                        socket_io_instance->on_bytes_received_context = on_bytes_received_context;
-
-                        socket_io_instance->on_io_error = on_io_error;
-                        socket_io_instance->on_io_error_context = on_io_error_context;
-
-                        socket_io_instance->io_state = IO_STATE_OPEN;
-
-                        result = 0;
-                    }
-
-                    freeaddrinfo(addrInfo);
+                    open_result_detailed.code = connect_error;
                 }
+
+                freeaddrinfo(addrInfo);
             }
         }
     }
