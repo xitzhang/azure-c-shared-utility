@@ -31,6 +31,17 @@ option(use_builtin_httpapi "set use_builtin_httpapi to ON to use the built-in ht
 option(use_cppunittest "set use_cppunittest to ON to build CppUnitTest tests on Windows (default is ON)" ON)
 option(suppress_header_searches "do not try to find headers - used when compiler check will fail" OFF)
 option(use_custom_heap "use externally defined heap functions instead of the malloc family" OFF)
+option(enable_dual_stack_connection_racing "enable staggered IPv6/IPv4 connection racing (default is OFF)" OFF)
+
+if(${enable_dual_stack_connection_racing})
+    if(WIN32 OR MACOSX)
+        message(FATAL_ERROR "Dual-stack connection racing is currently supported only by the Linux Berkeley socket adapter")
+    elseif(NOT use_socketio)
+        message(FATAL_ERROR "Dual-stack connection racing requires use_socketio=ON")
+    endif()
+
+    add_definitions(-DDUAL_STACK_CONNECTION_RACING_ENABLED)
+endif()
 
 if(${use_custom_heap})
     add_definitions(-DGB_USE_CUSTOM_HEAP)
@@ -601,4 +612,3 @@ else()
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
-
