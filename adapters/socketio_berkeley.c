@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -61,6 +62,33 @@
 #ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
 #define CONNECTION_ATTEMPT_DELAY_MS 250
 #define MAX_ACTIVE_CONNECTION_ATTEMPTS 2
+
+typedef enum CONNECTION_ATTEMPT_STATE_TAG
+{
+    CONNECTION_ATTEMPT_NOT_STARTED,
+    CONNECTION_ATTEMPT_CONNECTING,
+    CONNECTION_ATTEMPT_SUCCEEDED,
+    CONNECTION_ATTEMPT_FAILED
+} CONNECTION_ATTEMPT_STATE;
+
+typedef struct CONNECTION_ATTEMPT_TAG
+{
+    /* The attempt owns this descriptor until a winner transfers it to SOCKET_IO_INSTANCE. */
+    int socket;
+    const struct addrinfo* address;
+    CONNECTION_ATTEMPT_STATE state;
+    uint64_t started_at_ms;
+    int error_code;
+} CONNECTION_ATTEMPT;
+
+typedef enum CONNECTION_RACE_STATE_TAG
+{
+    CONNECTION_RACE_IDLE,
+    CONNECTION_RACE_CONNECTING,
+    CONNECTION_RACE_SUCCEEDED,
+    CONNECTION_RACE_FAILED,
+    CONNECTION_RACE_CANCELLED
+} CONNECTION_RACE_STATE;
 #endif
 
 typedef enum IO_STATE_TAG
@@ -94,6 +122,21 @@ typedef struct SOCKET_IO_INSTANCE_TAG
     IO_STATE io_state;
     SINGLYLINKEDLIST_HANDLE pending_io_list;
     unsigned char recv_bytes[RECEIVE_BYTES_VALUE];
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+    struct addrinfo* address_list;
+    const struct addrinfo** candidates;
+    size_t candidate_count;
+    size_t next_candidate_index;
+    CONNECTION_ATTEMPT attempts[MAX_ACTIVE_CONNECTION_ATTEMPTS];
+    size_t active_attempt_count;
+    size_t winning_attempt_index;
+    uint64_t overall_deadline_ms;
+    uint64_t next_attempt_at_ms;
+    CONNECTION_RACE_STATE connection_race_state;
+    ON_IO_OPEN_COMPLETE on_io_open_complete;
+    void* on_io_open_complete_context;
+    int last_connect_error;
+#endif
 } SOCKET_IO_INSTANCE;
 
 typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
@@ -103,6 +146,57 @@ typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
     char* ip_address;
     struct NETWORK_INTERFACE_DESCRIPTION_TAG* next;
 } NETWORK_INTERFACE_DESCRIPTION;
+
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+static void initialize_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
+{
+    size_t attempt_index;
+
+    socket_io_instance->address_list = NULL;
+    socket_io_instance->candidates = NULL;
+    socket_io_instance->candidate_count = 0;
+    socket_io_instance->next_candidate_index = 0;
+    socket_io_instance->active_attempt_count = 0;
+    socket_io_instance->winning_attempt_index = SIZE_MAX;
+    socket_io_instance->overall_deadline_ms = 0;
+    socket_io_instance->next_attempt_at_ms = 0;
+    socket_io_instance->connection_race_state = CONNECTION_RACE_IDLE;
+    socket_io_instance->on_io_open_complete = NULL;
+    socket_io_instance->on_io_open_complete_context = NULL;
+    socket_io_instance->last_connect_error = __FAILURE__;
+
+    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    {
+        socket_io_instance->attempts[attempt_index].socket = INVALID_SOCKET;
+        socket_io_instance->attempts[attempt_index].address = NULL;
+        socket_io_instance->attempts[attempt_index].state = CONNECTION_ATTEMPT_NOT_STARTED;
+        socket_io_instance->attempts[attempt_index].started_at_ms = 0;
+        socket_io_instance->attempts[attempt_index].error_code = 0;
+    }
+}
+
+static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
+{
+    size_t attempt_index;
+
+    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    {
+        if (socket_io_instance->attempts[attempt_index].socket != INVALID_SOCKET)
+        {
+            close(socket_io_instance->attempts[attempt_index].socket);
+            socket_io_instance->attempts[attempt_index].socket = INVALID_SOCKET;
+        }
+    }
+
+    free(socket_io_instance->candidates);
+    if (socket_io_instance->address_list != NULL)
+    {
+        freeaddrinfo(socket_io_instance->address_list);
+    }
+
+    initialize_connection_race(socket_io_instance);
+}
+#endif
 
 /*this function will clone an option given by name and value*/
 static void* socketio_CloneOption(const char* name, const void* value)
@@ -570,6 +664,9 @@ CONCRETE_IO_HANDLE socketio_create(void* io_create_parameters)
                     result->on_bytes_received_context = NULL;
                     result->on_io_error_context = NULL;
                     result->io_state = IO_STATE_CLOSED;
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+                    initialize_connection_race(result);
+#endif
                 }
             }
         }
@@ -592,6 +689,10 @@ void socketio_destroy(CONCRETE_IO_HANDLE socket_io)
         {
             close(socket_io_instance->socket);
         }
+
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+        dispose_connection_race(socket_io_instance);
+#endif
 
         /* clear allpending IOs */
         LIST_ITEM_HANDLE first_pending_io = singlylinkedlist_get_head_item(socket_io_instance->pending_io_list);
@@ -899,6 +1000,9 @@ int socketio_close(CONCRETE_IO_HANDLE socket_io, ON_IO_CLOSE_COMPLETE on_io_clos
     else
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+        dispose_connection_race(socket_io_instance);
+#endif
         if ((socket_io_instance->io_state != IO_STATE_CLOSED) && (socket_io_instance->io_state != IO_STATE_CLOSING))
         {
             // Only close if the socket isn't already in the closed or closing state

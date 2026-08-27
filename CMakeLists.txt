@@ -33,16 +33,6 @@ option(suppress_header_searches "do not try to find headers - used when compiler
 option(use_custom_heap "use externally defined heap functions instead of the malloc family" OFF)
 option(enable_dual_stack_connection_racing "enable staggered IPv6/IPv4 connection racing (default is OFF)" OFF)
 
-if(${enable_dual_stack_connection_racing})
-    if(WIN32 OR MACOSX)
-        message(FATAL_ERROR "Dual-stack connection racing is currently supported only by the Linux Berkeley socket adapter")
-    elseif(NOT use_socketio)
-        message(FATAL_ERROR "Dual-stack connection racing requires use_socketio=ON")
-    endif()
-
-    add_definitions(-DDUAL_STACK_CONNECTION_RACING_ENABLED)
-endif()
-
 if(${use_custom_heap})
     add_definitions(-DGB_USE_CUSTOM_HEAP)
 endif()
@@ -94,6 +84,16 @@ if(${exclude_aziotsharedutil_networking})
     option(use_wolfssl "set use_wolfssl to ON if wolfssl is to be used, set to OFF to not use wolfssl" OFF)
     option(use_socketio "set use_socketio to ON if socketio is to be included in the library, set to OFF if a different implementation will be provided" OFF)
     option(use_httpapi_compact "set use_httpapi_compact to ON if httpapi compact implementation is to be included in the library, set to OFF if a different implementation will be provided" OFF)
+endif()
+
+if(${enable_dual_stack_connection_racing})
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR TIZENRT)
+        message(FATAL_ERROR "Dual-stack connection racing is currently supported only by the Linux Berkeley socket adapter")
+    elseif(exclude_aziotsharedutil_networking OR NOT use_socketio)
+        message(FATAL_ERROR "Dual-stack connection racing requires use_socketio=ON")
+    endif()
+
+    add_definitions(-DDUAL_STACK_CONNECTION_RACING_ENABLED)
 endif()
 
 if(${use_etw}) 
