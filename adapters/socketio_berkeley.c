@@ -72,7 +72,6 @@
 
 #ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
 #define CONNECTION_ATTEMPT_DELAY_MS 250
-#define MAX_ACTIVE_CONNECTION_ATTEMPTS 2
 
 #ifndef SOCKETIO_BERKELEY_SOCKET
 #define SOCKETIO_BERKELEY_SOCKET socket
@@ -104,6 +103,14 @@
 
 #ifndef SOCKETIO_BERKELEY_FCNTL_SETFL
 #define SOCKETIO_BERKELEY_FCNTL_SETFL(socket, flags) fcntl((socket), F_SETFL, (flags))
+#endif
+
+#ifndef SOCKETIO_BERKELEY_RACE_MALLOC
+#define SOCKETIO_BERKELEY_RACE_MALLOC malloc
+#endif
+
+#ifndef SOCKETIO_BERKELEY_RACE_FREE
+#define SOCKETIO_BERKELEY_RACE_FREE free
 #endif
 
 typedef enum CONNECTION_ATTEMPT_STATE_TAG
@@ -161,7 +168,9 @@ typedef struct SOCKET_IO_INSTANCE_TAG
     const struct addrinfo** candidates;
     size_t candidate_count;
     size_t next_candidate_index;
-    CONNECTION_ATTEMPT attempts[MAX_ACTIVE_CONNECTION_ATTEMPTS];
+    CONNECTION_ATTEMPT* attempts;
+    struct pollfd* poll_descriptors;
+    size_t* polled_attempt_indices;
     size_t active_attempt_count;
     uint64_t overall_deadline_ms;
     uint64_t next_attempt_at_ms;
@@ -182,27 +191,19 @@ typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
 #ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
 static void initialize_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
 {
-    size_t attempt_index;
-
     socket_io_instance->address_list = NULL;
     socket_io_instance->candidates = NULL;
     socket_io_instance->candidate_count = 0;
     socket_io_instance->next_candidate_index = 0;
+    socket_io_instance->attempts = NULL;
+    socket_io_instance->poll_descriptors = NULL;
+    socket_io_instance->polled_attempt_indices = NULL;
     socket_io_instance->active_attempt_count = 0;
     socket_io_instance->overall_deadline_ms = 0;
     socket_io_instance->next_attempt_at_ms = 0;
     socket_io_instance->on_io_open_complete = NULL;
     socket_io_instance->on_io_open_complete_context = NULL;
     socket_io_instance->last_connect_error = __FAILURE__;
-
-    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
-    {
-        socket_io_instance->attempts[attempt_index].socket = INVALID_SOCKET;
-        socket_io_instance->attempts[attempt_index].address = NULL;
-        socket_io_instance->attempts[attempt_index].state = CONNECTION_ATTEMPT_NOT_STARTED;
-        socket_io_instance->attempts[attempt_index].started_at_ms = 0;
-        socket_io_instance->attempts[attempt_index].candidate_index = SIZE_MAX;
-    }
 }
 
 static int get_monotonic_time_ms(uint64_t* current_time_ms, int* error_code)
@@ -239,7 +240,9 @@ static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
 {
     size_t attempt_index;
 
-    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    for (attempt_index = 0;
+        (socket_io_instance->attempts != NULL) && (attempt_index < socket_io_instance->candidate_count);
+        attempt_index++)
     {
         if (socket_io_instance->attempts[attempt_index].socket != INVALID_SOCKET)
         {
@@ -248,7 +251,10 @@ static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
         }
     }
 
-    free(socket_io_instance->candidates);
+    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->polled_attempt_indices);
+    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->poll_descriptors);
+    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->attempts);
+    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->candidates);
     if (socket_io_instance->address_list != NULL)
     {
         SOCKETIO_BERKELEY_FREEADDRINFO(socket_io_instance->address_list);
@@ -276,13 +282,77 @@ static const struct addrinfo* take_next_candidate(struct addrinfo** cursor, int 
     return result;
 }
 
+static int allocate_connection_race_arrays(SOCKET_IO_INSTANCE* socket_io_instance, size_t candidate_count)
+{
+    int result;
+    size_t candidate_allocation_size;
+    size_t attempt_allocation_size;
+    size_t poll_allocation_size;
+    size_t poll_index_allocation_size;
+    nfds_t poll_capacity = (nfds_t)candidate_count;
+    const struct addrinfo** candidates = NULL;
+    CONNECTION_ATTEMPT* attempts = NULL;
+    struct pollfd* poll_descriptors = NULL;
+    size_t* polled_attempt_indices = NULL;
+    size_t candidate_index;
+
+    candidate_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*candidates));
+    attempt_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*attempts));
+    poll_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*poll_descriptors));
+    poll_index_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*polled_attempt_indices));
+
+    if ((candidate_count == 0) ||
+        ((size_t)poll_capacity != candidate_count) ||
+        (candidate_allocation_size == SIZE_MAX) ||
+        (attempt_allocation_size == SIZE_MAX) ||
+        (poll_allocation_size == SIZE_MAX) ||
+        (poll_index_allocation_size == SIZE_MAX))
+    {
+        LogError("Failure: connection race candidate count cannot be represented safely.");
+        socket_io_instance->last_connect_error = EOVERFLOW;
+        result = __FAILURE__;
+    }
+    else if (((candidates = SOCKETIO_BERKELEY_RACE_MALLOC(candidate_allocation_size)) == NULL) ||
+        ((attempts = SOCKETIO_BERKELEY_RACE_MALLOC(attempt_allocation_size)) == NULL) ||
+        ((poll_descriptors = SOCKETIO_BERKELEY_RACE_MALLOC(poll_allocation_size)) == NULL) ||
+        ((polled_attempt_indices = SOCKETIO_BERKELEY_RACE_MALLOC(poll_index_allocation_size)) == NULL))
+    {
+        LogError("Failure: unable to allocate connection race state for %zu candidates.", candidate_count);
+        SOCKETIO_BERKELEY_RACE_FREE(polled_attempt_indices);
+        SOCKETIO_BERKELEY_RACE_FREE(poll_descriptors);
+        SOCKETIO_BERKELEY_RACE_FREE(attempts);
+        SOCKETIO_BERKELEY_RACE_FREE(candidates);
+        socket_io_instance->last_connect_error = ENOMEM;
+        result = __FAILURE__;
+    }
+    else
+    {
+        for (candidate_index = 0; candidate_index < candidate_count; candidate_index++)
+        {
+            attempts[candidate_index].socket = INVALID_SOCKET;
+            attempts[candidate_index].address = NULL;
+            attempts[candidate_index].state = CONNECTION_ATTEMPT_NOT_STARTED;
+            attempts[candidate_index].started_at_ms = 0;
+            attempts[candidate_index].candidate_index = candidate_index;
+        }
+
+        socket_io_instance->candidates = candidates;
+        socket_io_instance->attempts = attempts;
+        socket_io_instance->poll_descriptors = poll_descriptors;
+        socket_io_instance->polled_attempt_indices = polled_attempt_indices;
+        socket_io_instance->candidate_count = candidate_count;
+        result = 0;
+    }
+
+    return result;
+}
+
 static int prepare_connection_candidates(SOCKET_IO_INSTANCE* socket_io_instance, struct addrinfo* address_list)
 {
     int result;
     int preferred_family = AF_UNSPEC;
     size_t candidate_count = 0;
     size_t candidate_index;
-    size_t allocation_size;
     struct addrinfo* address;
     struct addrinfo* ipv4_cursor = address_list;
     struct addrinfo* ipv6_cursor = address_list;
@@ -300,17 +370,14 @@ static int prepare_connection_candidates(SOCKET_IO_INSTANCE* socket_io_instance,
         }
     }
 
-    allocation_size = safe_multiply_size_t(candidate_count, sizeof(*socket_io_instance->candidates));
-    if ((candidate_count == 0) || (allocation_size == SIZE_MAX))
+    if (candidate_count == 0)
     {
         LogError("Failure: DNS resolution returned no usable IPv4 or IPv6 addresses.");
-        socket_io_instance->last_connect_error = __FAILURE__;
+        socket_io_instance->last_connect_error = EADDRNOTAVAIL;
         result = __FAILURE__;
     }
-    else if ((socket_io_instance->candidates = malloc(allocation_size)) == NULL)
+    else if (allocate_connection_race_arrays(socket_io_instance, candidate_count) != 0)
     {
-        LogError("Failure: unable to allocate the connection candidate list.");
-        socket_io_instance->last_connect_error = ENOMEM;
         result = __FAILURE__;
     }
     else
@@ -318,7 +385,6 @@ static int prepare_connection_candidates(SOCKET_IO_INSTANCE* socket_io_instance,
         int next_family = preferred_family;
 
         socket_io_instance->address_list = address_list;
-        socket_io_instance->candidate_count = candidate_count;
 
         for (candidate_index = 0; candidate_index < candidate_count; candidate_index++)
         {
@@ -780,7 +846,7 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
     char resolved_ip[INET6_ADDRSTRLEN] = { 0 };
     const void* resolved_address = NULL;
 
-    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
     {
         if (socket_io_instance->attempts[attempt_index].state == CONNECTION_ATTEMPT_NOT_STARTED)
         {
@@ -895,7 +961,7 @@ static CONNECTION_ATTEMPT* find_successful_connection_attempt(SOCKET_IO_INSTANCE
     size_t attempt_index;
     CONNECTION_ATTEMPT* result = NULL;
 
-    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
     {
         CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
         if ((attempt->state == CONNECTION_ATTEMPT_SUCCEEDED) &&
@@ -908,30 +974,13 @@ static CONNECTION_ATTEMPT* find_successful_connection_attempt(SOCKET_IO_INSTANCE
     return result;
 }
 
-static void start_available_connection_attempts(
-    SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms, int start_immediately)
+static void start_next_connection_attempt(
+    SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms, int is_first_attempt)
 {
-    while ((socket_io_instance->next_candidate_index < socket_io_instance->candidate_count) &&
-        (socket_io_instance->active_attempt_count < MAX_ACTIVE_CONNECTION_ATTEMPTS))
+    if ((socket_io_instance->next_candidate_index < socket_io_instance->candidate_count) &&
+        ((is_first_attempt != 0) || (current_time_ms >= socket_io_instance->next_attempt_at_ms)))
     {
-        int start_result;
-
-        if ((start_immediately == 0) &&
-            (socket_io_instance->active_attempt_count > 0) &&
-            (current_time_ms < socket_io_instance->next_attempt_at_ms))
-        {
-            break;
-        }
-
-        start_result = start_connection_attempt(socket_io_instance, current_time_ms);
-
-        if ((find_successful_connection_attempt(socket_io_instance) != NULL) ||
-            (start_result == 0))
-        {
-            break;
-        }
-
-        start_immediately = 1;
+        (void)start_connection_attempt(socket_io_instance, current_time_ms);
     }
 }
 
@@ -987,10 +1036,7 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
     uint64_t current_time_ms;
     size_t attempt_index;
     CONNECTION_ATTEMPT* winning_attempt;
-    struct pollfd poll_descriptors[MAX_ACTIVE_CONNECTION_ATTEMPTS];
-    CONNECTION_ATTEMPT* polled_attempts[MAX_ACTIVE_CONNECTION_ATTEMPTS];
     nfds_t poll_descriptor_count = 0;
-    int attempt_failed = 0;
 
     winning_attempt = find_successful_connection_attempt(socket_io_instance);
     if (winning_attempt != NULL)
@@ -1014,22 +1060,23 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
     {
         int poll_result = 0;
 
-        for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+        for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
         {
             CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
             if (attempt->state == CONNECTION_ATTEMPT_CONNECTING)
             {
-                poll_descriptors[poll_descriptor_count].fd = attempt->socket;
-                poll_descriptors[poll_descriptor_count].events = POLLOUT;
-                poll_descriptors[poll_descriptor_count].revents = 0;
-                polled_attempts[poll_descriptor_count] = attempt;
+                socket_io_instance->poll_descriptors[poll_descriptor_count].fd = attempt->socket;
+                socket_io_instance->poll_descriptors[poll_descriptor_count].events = POLLOUT;
+                socket_io_instance->poll_descriptors[poll_descriptor_count].revents = 0;
+                socket_io_instance->polled_attempt_indices[poll_descriptor_count] = attempt_index;
                 poll_descriptor_count++;
             }
         }
 
         if (poll_descriptor_count > 0)
         {
-            poll_result = SOCKETIO_BERKELEY_POLL(poll_descriptors, poll_descriptor_count, 0);
+            poll_result = SOCKETIO_BERKELEY_POLL(
+                socket_io_instance->poll_descriptors, poll_descriptor_count, 0);
         }
 
         if ((poll_result < 0) && (errno != EINTR))
@@ -1043,18 +1090,18 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
         {
             for (attempt_index = 0; attempt_index < poll_descriptor_count; attempt_index++)
             {
-                CONNECTION_ATTEMPT* attempt = polled_attempts[attempt_index];
+                CONNECTION_ATTEMPT* attempt =
+                    &socket_io_instance->attempts[socket_io_instance->polled_attempt_indices[attempt_index]];
 
-                if (poll_descriptors[attempt_index].revents != 0)
+                if (socket_io_instance->poll_descriptors[attempt_index].revents != 0)
                 {
                     int socket_error = 0;
                     socklen_t socket_error_length = sizeof(socket_error);
 
-                    if ((poll_descriptors[attempt_index].revents & POLLNVAL) != 0)
+                    if ((socket_io_instance->poll_descriptors[attempt_index].revents & POLLNVAL) != 0)
                     {
                         LogError("Failure: poll reported an invalid connection socket.");
                         fail_connection_attempt(socket_io_instance, attempt, EBADF);
-                        attempt_failed = 1;
                     }
                     else if (SOCKETIO_BERKELEY_GETSOCKOPT(attempt->socket, SOL_SOCKET, SO_ERROR,
                         &socket_error, &socket_error_length) != 0)
@@ -1063,7 +1110,6 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
                         LogError("Failure: getsockopt failure %d (%s).",
                             getsockopt_error, strerror(getsockopt_error));
                         fail_connection_attempt(socket_io_instance, attempt, getsockopt_error);
-                        attempt_failed = 1;
                     }
                     else if (socket_error != 0)
                     {
@@ -1071,7 +1117,6 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
                             socket_io_instance->hostname, socket_io_instance->port,
                             socket_error, strerror(socket_error));
                         fail_connection_attempt(socket_io_instance, attempt, socket_error);
-                        attempt_failed = 1;
                     }
                     else
                     {
@@ -1088,7 +1133,7 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
             }
             else
             {
-                start_available_connection_attempts(socket_io_instance, current_time_ms, attempt_failed);
+                start_next_connection_attempt(socket_io_instance, current_time_ms, 0);
                 winning_attempt = find_successful_connection_attempt(socket_io_instance);
 
                 if (winning_attempt != NULL)
@@ -1495,7 +1540,7 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                             socket_io_instance->on_io_error_context = on_io_error_context;
                             socket_io_instance->io_state = IO_STATE_OPENING;
 
-                            start_available_connection_attempts(socket_io_instance, current_time_ms, 1);
+                            start_next_connection_attempt(socket_io_instance, current_time_ms, 1);
                             open_pending = 1;
                             result = 0;
                         }

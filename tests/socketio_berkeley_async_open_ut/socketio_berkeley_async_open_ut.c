@@ -29,6 +29,8 @@ static int test_getsockopt(
 static int test_close(int socket);
 static int test_fcntl_getfl(int socket);
 static int test_fcntl_setfl(int socket, int flags);
+static void* test_race_malloc(size_t size);
+static void test_race_free(void* pointer);
 
 #undef _DEFAULT_SOURCE
 #define SOCKETIO_BERKELEY_GETADDRINFO test_getaddrinfo
@@ -41,6 +43,8 @@ static int test_fcntl_setfl(int socket, int flags);
 #define SOCKETIO_BERKELEY_CLOSE test_close
 #define SOCKETIO_BERKELEY_FCNTL_GETFL test_fcntl_getfl
 #define SOCKETIO_BERKELEY_FCNTL_SETFL test_fcntl_setfl
+#define SOCKETIO_BERKELEY_RACE_MALLOC test_race_malloc
+#define SOCKETIO_BERKELEY_RACE_FREE test_race_free
 #include "../../adapters/socketio_berkeley.c"
 
 #define TEST_CHECK(condition) \
@@ -84,6 +88,17 @@ static int mock_close_counts[MOCK_MAX_CANDIDATES];
 static int mock_poll_call_count;
 static nfds_t mock_max_polled_descriptor_count;
 static int mock_freeaddrinfo_count;
+static int mock_race_allocation_call_count;
+static int mock_race_allocation_fail_call;
+static int mock_race_outstanding_allocation_count;
+static int mock_race_allocation_tracking_error;
+
+#define TEST_CHECK_RACE_ALLOCATIONS_RELEASED() \
+    do \
+    { \
+        TEST_CHECK(mock_race_outstanding_allocation_count == 0); \
+        TEST_CHECK(mock_race_allocation_tracking_error == 0); \
+    } while (0)
 
 static int socket_index_from_descriptor(int socket)
 {
@@ -106,6 +121,8 @@ static void reset_mocks(void)
     mock_poll_call_count = 0;
     mock_max_polled_descriptor_count = 0;
     mock_freeaddrinfo_count = 0;
+    mock_race_allocation_call_count = 0;
+    mock_race_allocation_fail_call = 0;
 }
 
 static void set_mock_candidates(const int* families, size_t family_count)
@@ -263,6 +280,43 @@ static int test_fcntl_setfl(int socket, int flags)
     return 0;
 }
 
+static void* test_race_malloc(size_t size)
+{
+    void* result;
+
+    mock_race_allocation_call_count++;
+    if (mock_race_allocation_fail_call == mock_race_allocation_call_count)
+    {
+        result = NULL;
+    }
+    else
+    {
+        result = malloc(size);
+        if (result != NULL)
+        {
+            mock_race_outstanding_allocation_count++;
+        }
+    }
+
+    return result;
+}
+
+static void test_race_free(void* pointer)
+{
+    if (pointer != NULL)
+    {
+        if (mock_race_outstanding_allocation_count == 0)
+        {
+            mock_race_allocation_tracking_error = 1;
+        }
+        else
+        {
+            mock_race_outstanding_allocation_count--;
+        }
+        free(pointer);
+    }
+}
+
 static void on_open(void* context, IO_OPEN_RESULT_DETAILED open_result)
 {
     CALLBACK_STATE* callback_state = context;
@@ -308,19 +362,30 @@ static int open_test_socket_io(SOCKET_IO_INSTANCE* socket_io, CALLBACK_STATE* ca
         callback_state);
 }
 
-static int start_two_pending_attempts(
-    SOCKET_IO_INSTANCE* socket_io, CALLBACK_STATE* callback_state, const int* families)
+static int start_pending_attempts(
+    SOCKET_IO_INSTANCE* socket_io, CALLBACK_STATE* callback_state, const int* families, size_t candidate_count)
 {
-    set_mock_candidates(families, 2);
+    size_t candidate_index;
+
+    set_mock_candidates(families, candidate_count);
     TEST_CHECK(open_test_socket_io(socket_io, callback_state) == 0);
     TEST_CHECK(socket_io->active_attempt_count == 1);
     TEST_CHECK(mock_socket_count == 1);
 
-    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
-    socketio_dowork(socket_io);
-    TEST_CHECK(socket_io->active_attempt_count == 2);
-    TEST_CHECK(mock_socket_count == 2);
+    for (candidate_index = 1; candidate_index < candidate_count; candidate_index++)
+    {
+        mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+        socketio_dowork(socket_io);
+        TEST_CHECK(socket_io->active_attempt_count == candidate_index + 1);
+        TEST_CHECK(mock_socket_count == (int)(candidate_index + 1));
+    }
     return 0;
+}
+
+static int start_two_pending_attempts(
+    SOCKET_IO_INSTANCE* socket_io, CALLBACK_STATE* callback_state, const int* families)
+{
+    return start_pending_attempts(socket_io, callback_state, families, 2);
 }
 
 static void destroy_after_success(SOCKET_IO_INSTANCE* socket_io)
@@ -355,6 +420,7 @@ static int close_during_opening_cancels_once(void)
     TEST_CHECK(callback_state.open_count == 1);
     TEST_CHECK(mock_close_counts[0] == 1);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -390,6 +456,7 @@ static int failed_open_can_be_reopened_without_close(void)
     TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_CANCELLED);
     TEST_CHECK(mock_close_counts[1] == 1);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -418,17 +485,19 @@ static int recorded_success_wins_at_expired_deadline(void)
     TEST_CHECK(mock_poll_call_count == 0);
     TEST_CHECK(mock_close_counts[0] == 0);
     destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
-static int second_attempt_starts_at_fixed_delay(void)
+static int four_pending_attempts_start_at_fixed_intervals(void)
 {
-    const int families[] = { AF_INET6, AF_INET };
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
     SOCKET_IO_INSTANCE* socket_io;
+    size_t candidate_index;
 
     reset_mocks();
-    set_mock_candidates(families, 2);
+    set_mock_candidates(families, 4);
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
     TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
@@ -448,12 +517,97 @@ static int second_attempt_starts_at_fixed_delay(void)
     TEST_CHECK(socket_io->active_attempt_count == 2);
     TEST_CHECK(socket_io->attempts[1].started_at_ms - socket_io->attempts[0].started_at_ms ==
         CONNECTION_ATTEMPT_DELAY_MS);
-    TEST_CHECK(mock_socket_families[0] == AF_INET6);
-    TEST_CHECK(mock_socket_families[1] == AF_INET);
 
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 3);
+    TEST_CHECK(socket_io->active_attempt_count == 3);
+    TEST_CHECK(socket_io->attempts[2].started_at_ms == 1500);
+
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 4);
+    TEST_CHECK(socket_io->active_attempt_count == 4);
+    TEST_CHECK(socket_io->attempts[3].started_at_ms == 1750);
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_max_polled_descriptor_count == 4);
+
+    for (candidate_index = 0; candidate_index < 4; candidate_index++)
+    {
+        TEST_CHECK(mock_socket_families[candidate_index] == families[candidate_index]);
+    }
     socketio_destroy(socket_io);
+    for (candidate_index = 0; candidate_index < 4; candidate_index++)
+    {
+        TEST_CHECK(mock_close_counts[candidate_index] == 1);
+    }
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int delayed_dowork_starts_only_one_attempt(void)
+{
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 4);
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+
+    mock_time_ms = 5000;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+    TEST_CHECK(socket_io->attempts[1].started_at_ms == 5000);
+    TEST_CHECK(socket_io->next_attempt_at_ms == 5000 + CONNECTION_ATTEMPT_DELAY_MS);
+
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS - 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+
+    mock_time_ms++;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 3);
+    TEST_CHECK(socket_io->attempts[2].started_at_ms == 5250);
+    socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int third_candidate_wins_before_fourth_starts(void)
+{
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 4);
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 3);
+    TEST_CHECK(socket_io->active_attempt_count == 3);
+
+    mock_poll_ready[2] = 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 2);
+    TEST_CHECK(mock_socket_count == 3);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_close_counts[2] == 0);
+    TEST_CHECK(mock_close_counts[3] == 0);
+    destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -478,6 +632,7 @@ static int ipv4_winner_closes_ipv6_loser(void)
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 0);
     destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -502,12 +657,13 @@ static int ipv6_winner_closes_ipv4_loser(void)
     TEST_CHECK(mock_close_counts[0] == 0);
     TEST_CHECK(mock_close_counts[1] == 1);
     destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
-static int simultaneous_successes_choose_first_candidate(void)
+static int simultaneous_successes_choose_lowest_of_four_candidates(void)
 {
-    const int families[] = { AF_INET6, AF_INET };
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
     SOCKET_IO_INSTANCE* socket_io;
     int result;
@@ -515,23 +671,27 @@ static int simultaneous_successes_choose_first_candidate(void)
     reset_mocks();
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    result = start_two_pending_attempts(socket_io, &callback_state, families);
+    result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
 
-    mock_poll_ready[0] = 1;
     mock_poll_ready[1] = 1;
+    mock_poll_ready[2] = 1;
+    mock_poll_ready[3] = 1;
     socketio_dowork(socket_io);
     TEST_CHECK(callback_state.open_count == 1);
     TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
-    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE);
-    TEST_CHECK(mock_close_counts[0] == 0);
-    TEST_CHECK(mock_close_counts[1] == 1);
-    TEST_CHECK(mock_max_polled_descriptor_count == 2);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    TEST_CHECK(mock_close_counts[3] == 1);
+    TEST_CHECK(mock_max_polled_descriptor_count == 4);
     destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
-static int first_failure_starts_later_candidate_promptly(void)
+static int immediate_failure_respects_delay_then_later_candidate_succeeds(void)
 {
     const int families[] = { AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
@@ -539,19 +699,26 @@ static int first_failure_starts_later_candidate_promptly(void)
 
     reset_mocks();
     set_mock_candidates(families, 2);
+    mock_connect_results[0] = MOCK_CONNECT_FAILS;
+    mock_connect_errors[0] = ENETUNREACH;
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
     TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
-
-    mock_time_ms = 1100;
-    mock_poll_ready[0] = 1;
-    mock_socket_errors[0] = ENETUNREACH;
-    socketio_dowork(socket_io);
     TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_socket_count == 1);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+
+    mock_time_ms = 1000 + CONNECTION_ATTEMPT_DELAY_MS - 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 1);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+
+    mock_time_ms++;
+    socketio_dowork(socket_io);
     TEST_CHECK(mock_socket_count == 2);
     TEST_CHECK(socket_io->active_attempt_count == 1);
     TEST_CHECK(socket_io->attempts[0].candidate_index == 1);
-    TEST_CHECK(socket_io->attempts[0].started_at_ms == 1100);
+    TEST_CHECK(socket_io->attempts[0].started_at_ms == 1250);
 
     mock_poll_ready[1] = 1;
     socketio_dowork(socket_io);
@@ -559,12 +726,13 @@ static int first_failure_starts_later_candidate_promptly(void)
     TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
     TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
     destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
 static int all_candidates_fail_once(void)
 {
-    const int families[] = { AF_INET6, AF_INET };
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
     SOCKET_IO_INSTANCE* socket_io;
     int result;
@@ -572,30 +740,37 @@ static int all_candidates_fail_once(void)
     reset_mocks();
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    result = start_two_pending_attempts(socket_io, &callback_state, families);
+    result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
 
     mock_poll_ready[0] = 1;
     mock_poll_ready[1] = 1;
+    mock_poll_ready[2] = 1;
+    mock_poll_ready[3] = 1;
     mock_socket_errors[0] = ECONNREFUSED;
     mock_socket_errors[1] = ENETUNREACH;
+    mock_socket_errors[2] = EHOSTUNREACH;
+    mock_socket_errors[3] = ECONNRESET;
     socketio_dowork(socket_io);
     TEST_CHECK(callback_state.open_count == 1);
     TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
-    TEST_CHECK(callback_state.last_open_result.code == ENETUNREACH);
+    TEST_CHECK(callback_state.last_open_result.code == ECONNRESET);
     TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    TEST_CHECK(mock_close_counts[3] == 1);
 
     socketio_dowork(socket_io);
     TEST_CHECK(callback_state.open_count == 1);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
 static int deadline_closes_all_active_attempts(void)
 {
-    const int families[] = { AF_INET6, AF_INET };
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
     SOCKET_IO_INSTANCE* socket_io;
     int result;
@@ -604,11 +779,13 @@ static int deadline_closes_all_active_attempts(void)
     reset_mocks();
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    result = start_two_pending_attempts(socket_io, &callback_state, families);
+    result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
 
     mock_poll_ready[0] = 1;
     mock_poll_ready[1] = 1;
+    mock_poll_ready[2] = 1;
+    mock_poll_ready[3] = 1;
     poll_call_count_before_deadline = mock_poll_call_count;
     mock_time_ms = socket_io->overall_deadline_ms;
     socketio_dowork(socket_io);
@@ -618,16 +795,19 @@ static int deadline_closes_all_active_attempts(void)
     TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    TEST_CHECK(mock_close_counts[3] == 1);
     TEST_CHECK(mock_poll_call_count == poll_call_count_before_deadline);
     socketio_dowork(socket_io);
     TEST_CHECK(callback_state.open_count == 1);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
-static int close_and_destroy_close_two_attempts(void)
+static int close_and_destroy_close_four_attempts(void)
 {
-    const int families[] = { AF_INET6, AF_INET };
+    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
     CALLBACK_STATE callback_state = { 0 };
     SOCKET_IO_INSTANCE* socket_io;
     int result;
@@ -635,7 +815,7 @@ static int close_and_destroy_close_two_attempts(void)
     reset_mocks();
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    result = start_two_pending_attempts(socket_io, &callback_state, families);
+    result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
     TEST_CHECK(socketio_close(socket_io, on_close, &callback_state) == 0);
     TEST_CHECK(callback_state.open_count == 1);
@@ -643,59 +823,96 @@ static int close_and_destroy_close_two_attempts(void)
     TEST_CHECK(callback_state.close_count == 1);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    TEST_CHECK(mock_close_counts[3] == 1);
     socketio_dowork(socket_io);
     TEST_CHECK(callback_state.open_count == 1);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
 
     reset_mocks();
     (void)memset(&callback_state, 0, sizeof(callback_state));
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    result = start_two_pending_attempts(socket_io, &callback_state, families);
+    result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
     socketio_destroy(socket_io);
     TEST_CHECK(callback_state.open_count == 0);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    TEST_CHECK(mock_close_counts[3] == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
-static int active_attempt_count_never_exceeds_cap(void)
+static int every_dynamic_race_allocation_failure_is_reported_and_cleaned_up(void)
 {
-    const int families[] = { AF_INET6, AF_INET, AF_INET6, AF_INET };
-    CALLBACK_STATE callback_state = { 0 };
+    const int families[] = { AF_INET6, AF_INET };
+    int allocation_fail_call;
+
+    for (allocation_fail_call = 1; allocation_fail_call <= 4; allocation_fail_call++)
+    {
+        CALLBACK_STATE callback_state = { 0 };
+        SOCKET_IO_INSTANCE* socket_io;
+
+        reset_mocks();
+        set_mock_candidates(families, 2);
+        mock_race_allocation_fail_call = allocation_fail_call;
+        socket_io = create_test_socket_io();
+        TEST_CHECK(socket_io != NULL);
+        TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+        TEST_CHECK(mock_race_allocation_call_count == allocation_fail_call);
+        TEST_CHECK(callback_state.open_count == 1);
+        TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+        TEST_CHECK(callback_state.last_open_result.code == ENOMEM);
+        TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+        TEST_CHECK(socket_io->socket == INVALID_SOCKET);
+        TEST_CHECK(socket_io->candidate_count == 0);
+        TEST_CHECK(socket_io->active_attempt_count == 0);
+        TEST_CHECK(socket_io->attempts == NULL);
+        TEST_CHECK(socket_io->poll_descriptors == NULL);
+        TEST_CHECK(socket_io->polled_attempt_indices == NULL);
+        TEST_CHECK(socket_io->candidates == NULL);
+        TEST_CHECK(socket_io->address_list == NULL);
+        TEST_CHECK(socket_io->on_io_open_complete == NULL);
+        TEST_CHECK(socket_io->on_io_open_complete_context == NULL);
+        TEST_CHECK(socket_io->on_bytes_received == NULL);
+        TEST_CHECK(socket_io->on_bytes_received_context == NULL);
+        TEST_CHECK(socket_io->on_io_error == NULL);
+        TEST_CHECK(socket_io->on_io_error_context == NULL);
+        TEST_CHECK(mock_socket_count == 0);
+        TEST_CHECK(mock_freeaddrinfo_count == 1);
+        TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+
+        socketio_dowork(socket_io);
+        TEST_CHECK(callback_state.open_count == 1);
+        TEST_CHECK(socketio_close(socket_io, NULL, NULL) == 0);
+        TEST_CHECK(callback_state.open_count == 1);
+        socketio_destroy(socket_io);
+        TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    }
+
+    return 0;
+}
+
+static int dynamic_attempt_size_overflow_is_rejected(void)
+{
     SOCKET_IO_INSTANCE* socket_io;
+    size_t unsafe_candidate_count = (SIZE_MAX / sizeof(CONNECTION_ATTEMPT)) + 1;
 
     reset_mocks();
-    set_mock_candidates(families, 4);
     socket_io = create_test_socket_io();
     TEST_CHECK(socket_io != NULL);
-    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
-    TEST_CHECK(socket_io->active_attempt_count == 1);
-
-    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
-    socketio_dowork(socket_io);
-    TEST_CHECK(socket_io->active_attempt_count == MAX_ACTIVE_CONNECTION_ATTEMPTS);
-    TEST_CHECK(mock_socket_count == 2);
-
-    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
-    socketio_dowork(socket_io);
-    TEST_CHECK(socket_io->active_attempt_count == MAX_ACTIVE_CONNECTION_ATTEMPTS);
-    TEST_CHECK(mock_socket_count == 2);
-    TEST_CHECK(mock_max_polled_descriptor_count == MAX_ACTIVE_CONNECTION_ATTEMPTS);
-
-    mock_poll_ready[0] = 1;
-    mock_socket_errors[0] = ECONNREFUSED;
-    socketio_dowork(socket_io);
-    TEST_CHECK(socket_io->active_attempt_count == MAX_ACTIVE_CONNECTION_ATTEMPTS);
-    TEST_CHECK(mock_socket_count == 3);
-    TEST_CHECK(mock_close_counts[0] == 1);
-
-    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
-    socketio_dowork(socket_io);
-    TEST_CHECK(socket_io->active_attempt_count == MAX_ACTIVE_CONNECTION_ATTEMPTS);
-    TEST_CHECK(mock_socket_count == 3);
+    TEST_CHECK(allocate_connection_race_arrays(socket_io, unsafe_candidate_count) != 0);
+    TEST_CHECK(socket_io->last_connect_error == EOVERFLOW);
+    TEST_CHECK(mock_race_allocation_call_count == 0);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->poll_descriptors == NULL);
+    TEST_CHECK(socket_io->polled_attempt_indices == NULL);
+    TEST_CHECK(socket_io->candidates == NULL);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -728,10 +945,10 @@ static int candidate_order_alternates_after_preferred_family(void)
     TEST_CHECK(socket_io->candidates[2] == &addresses[1]);
     TEST_CHECK(socket_io->candidates[3] == &addresses[3]);
 
-    free(socket_io->candidates);
-    socket_io->candidates = NULL;
     socket_io->address_list = NULL;
+    dispose_connection_race(socket_io);
     socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
 
@@ -742,15 +959,18 @@ int main(void)
     result = close_during_opening_cancels_once();
     if (result == 0) result = failed_open_can_be_reopened_without_close();
     if (result == 0) result = recorded_success_wins_at_expired_deadline();
-    if (result == 0) result = second_attempt_starts_at_fixed_delay();
+    if (result == 0) result = four_pending_attempts_start_at_fixed_intervals();
+    if (result == 0) result = delayed_dowork_starts_only_one_attempt();
+    if (result == 0) result = third_candidate_wins_before_fourth_starts();
     if (result == 0) result = ipv4_winner_closes_ipv6_loser();
     if (result == 0) result = ipv6_winner_closes_ipv4_loser();
-    if (result == 0) result = simultaneous_successes_choose_first_candidate();
-    if (result == 0) result = first_failure_starts_later_candidate_promptly();
+    if (result == 0) result = simultaneous_successes_choose_lowest_of_four_candidates();
+    if (result == 0) result = immediate_failure_respects_delay_then_later_candidate_succeeds();
     if (result == 0) result = all_candidates_fail_once();
     if (result == 0) result = deadline_closes_all_active_attempts();
-    if (result == 0) result = close_and_destroy_close_two_attempts();
-    if (result == 0) result = active_attempt_count_never_exceeds_cap();
+    if (result == 0) result = close_and_destroy_close_four_attempts();
+    if (result == 0) result = every_dynamic_race_allocation_failure_is_reported_and_cleaned_up();
+    if (result == 0) result = dynamic_attempt_size_overflow_is_rejected();
     if (result == 0) result = candidate_order_alternates_after_preferred_family();
 
     if (result == 0)
