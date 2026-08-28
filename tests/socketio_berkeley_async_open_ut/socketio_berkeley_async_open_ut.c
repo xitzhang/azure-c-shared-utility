@@ -14,6 +14,11 @@
 #include <sys/socket.h>
 #include <time.h>
 
+#ifdef SOCKETIO_BERKELEY_ASYNC_OPEN_TLS_LAYER_TEST
+#include "azure_c_shared_utility/tlsio.h"
+#include "azure_c_shared_utility/tlsio_openssl.h"
+#endif
+
 #define MOCK_MAX_CANDIDATES 8
 #define MOCK_SOCKET_BASE 100
 
@@ -394,7 +399,7 @@ static void destroy_after_success(SOCKET_IO_INSTANCE* socket_io)
     socketio_destroy(socket_io);
 }
 
-static int close_during_opening_cancels_once(void)
+static int close_during_opening_drops_socket_open_callback(void)
 {
     const int families[] = { AF_INET6 };
     CALLBACK_STATE callback_state = { 0 };
@@ -408,16 +413,26 @@ static int close_during_opening_cancels_once(void)
     TEST_CHECK(callback_state.open_count == 0);
 
     TEST_CHECK(socketio_close(socket_io, on_close, &callback_state) == 0);
-    TEST_CHECK(callback_state.open_count == 1);
-    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_CANCELLED);
-    TEST_CHECK(callback_state.last_open_result.code == 0);
+    TEST_CHECK(callback_state.open_count == 0);
     TEST_CHECK(callback_state.close_count == 1);
-    TEST_CHECK(callback_state.open_callback_order == 1);
-    TEST_CHECK(callback_state.close_callback_order == 2);
+    TEST_CHECK(callback_state.open_callback_order == 0);
+    TEST_CHECK(callback_state.close_callback_order == 1);
     TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+    TEST_CHECK(socket_io->address_list == NULL);
+    TEST_CHECK(socket_io->candidates == NULL);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->poll_descriptors == NULL);
+    TEST_CHECK(socket_io->polled_attempt_indices == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete_context == NULL);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
 
     socketio_dowork(socket_io);
-    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.open_count == 0);
+    TEST_CHECK(callback_state.close_count == 1);
     TEST_CHECK(mock_close_counts[0] == 1);
     socketio_destroy(socket_io);
     TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
@@ -452,13 +467,57 @@ static int failed_open_can_be_reopened_without_close(void)
     TEST_CHECK(mock_socket_count == 2);
 
     TEST_CHECK(socketio_close(socket_io, NULL, NULL) == 0);
-    TEST_CHECK(callback_state.open_count == 2);
-    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_CANCELLED);
+    TEST_CHECK(callback_state.open_count == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
     socketio_destroy(socket_io);
     TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     return 0;
 }
+
+#ifdef SOCKETIO_BERKELEY_ASYNC_OPEN_TLS_LAYER_TEST
+static int tls_close_while_berkeley_is_opening_cancels_application_once(void)
+{
+    const int families[] = { AF_INET6 };
+    TLSIO_CONFIG tlsio_config = { "unused.test", 443, NULL, NULL };
+    CALLBACK_STATE callback_state = { 0 };
+    CONCRETE_IO_HANDLE tls_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 1);
+    tls_io = tlsio_openssl_create(&tlsio_config);
+    TEST_CHECK(tls_io != NULL);
+    TEST_CHECK(tlsio_openssl_open(
+        tls_io,
+        on_open,
+        &callback_state,
+        on_bytes_received,
+        &callback_state,
+        on_io_error,
+        &callback_state) == 0);
+    TEST_CHECK(callback_state.open_count == 0);
+    TEST_CHECK(mock_socket_count == 1);
+    TEST_CHECK(mock_close_counts[0] == 0);
+    TEST_CHECK(mock_race_outstanding_allocation_count == 4);
+
+    TEST_CHECK(tlsio_openssl_close(tls_io, NULL, NULL) == 0);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_CANCELLED);
+    TEST_CHECK(callback_state.last_open_result.code == 0);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+
+    tlsio_openssl_dowork(tls_io);
+    tlsio_openssl_dowork(tls_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    tlsio_openssl_destroy(tls_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+#endif
 
 static int recorded_success_wins_at_expired_deadline(void)
 {
@@ -818,15 +877,21 @@ static int close_and_destroy_close_four_attempts(void)
     result = start_pending_attempts(socket_io, &callback_state, families, 4);
     TEST_CHECK(result == 0);
     TEST_CHECK(socketio_close(socket_io, on_close, &callback_state) == 0);
-    TEST_CHECK(callback_state.open_count == 1);
-    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_CANCELLED);
+    TEST_CHECK(callback_state.open_count == 0);
     TEST_CHECK(callback_state.close_count == 1);
     TEST_CHECK(mock_close_counts[0] == 1);
     TEST_CHECK(mock_close_counts[1] == 1);
     TEST_CHECK(mock_close_counts[2] == 1);
     TEST_CHECK(mock_close_counts[3] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete_context == NULL);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
     socketio_dowork(socket_io);
-    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.open_count == 0);
+    TEST_CHECK(callback_state.close_count == 1);
     socketio_destroy(socket_io);
     TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
 
@@ -956,8 +1021,11 @@ int main(void)
 {
     int result;
 
-    result = close_during_opening_cancels_once();
+    result = close_during_opening_drops_socket_open_callback();
     if (result == 0) result = failed_open_can_be_reopened_without_close();
+#ifdef SOCKETIO_BERKELEY_ASYNC_OPEN_TLS_LAYER_TEST
+    if (result == 0) result = tls_close_while_berkeley_is_opening_cancels_application_once();
+#endif
     if (result == 0) result = recorded_success_wins_at_expired_deadline();
     if (result == 0) result = four_pending_attempts_start_at_fixed_intervals();
     if (result == 0) result = delayed_dowork_starts_only_one_attempt();

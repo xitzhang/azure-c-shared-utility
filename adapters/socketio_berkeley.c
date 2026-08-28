@@ -1623,14 +1623,6 @@ int socketio_close(CONCRETE_IO_HANDLE socket_io, ON_IO_CLOSE_COMPLETE on_io_clos
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
 #ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        ON_IO_OPEN_COMPLETE cancelled_open_callback =
-            (socket_io_instance->io_state == IO_STATE_OPENING) ?
-            socket_io_instance->on_io_open_complete : NULL;
-        void* cancelled_open_context =
-            (socket_io_instance->io_state == IO_STATE_OPENING) ?
-            socket_io_instance->on_io_open_complete_context : NULL;
-        IO_OPEN_RESULT_DETAILED cancelled_open_result = { IO_OPEN_CANCELLED, 0 };
-
         dispose_connection_race(socket_io_instance);
         if ((socket_io_instance->io_state != IO_STATE_CLOSED) && (socket_io_instance->io_state != IO_STATE_CLOSING))
         {
@@ -1647,11 +1639,6 @@ int socketio_close(CONCRETE_IO_HANDLE socket_io, ON_IO_CLOSE_COMPLETE on_io_clos
         socket_io_instance->on_bytes_received_context = NULL;
         socket_io_instance->on_io_error = NULL;
         socket_io_instance->on_io_error_context = NULL;
-
-        if (cancelled_open_callback != NULL)
-        {
-            cancelled_open_callback(cancelled_open_context, cancelled_open_result);
-        }
 #else
         if ((socket_io_instance->io_state != IO_STATE_CLOSED) && (socket_io_instance->io_state != IO_STATE_CLOSING))
         {
