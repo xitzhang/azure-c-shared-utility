@@ -196,6 +196,94 @@ static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
 
     initialize_connection_race(socket_io_instance);
 }
+
+static const struct addrinfo* take_next_candidate(struct addrinfo** cursor, int family)
+{
+    const struct addrinfo* result = NULL;
+
+    while (*cursor != NULL)
+    {
+        struct addrinfo* current = *cursor;
+        *cursor = current->ai_next;
+
+        if ((current->ai_family == family) && (current->ai_addr != NULL))
+        {
+            result = current;
+            break;
+        }
+    }
+
+    return result;
+}
+
+static int prepare_connection_candidates(SOCKET_IO_INSTANCE* socket_io_instance, struct addrinfo* address_list)
+{
+    int result;
+    int preferred_family = AF_UNSPEC;
+    size_t candidate_count = 0;
+    size_t candidate_index;
+    size_t allocation_size;
+    struct addrinfo* address;
+    struct addrinfo* ipv4_cursor = address_list;
+    struct addrinfo* ipv6_cursor = address_list;
+
+    for (address = address_list; address != NULL; address = address->ai_next)
+    {
+        if (((address->ai_family == AF_INET) || (address->ai_family == AF_INET6)) &&
+            (address->ai_addr != NULL))
+        {
+            if (preferred_family == AF_UNSPEC)
+            {
+                preferred_family = address->ai_family;
+            }
+            candidate_count++;
+        }
+    }
+
+    allocation_size = safe_multiply_size_t(candidate_count, sizeof(*socket_io_instance->candidates));
+    if ((candidate_count == 0) || (allocation_size == SIZE_MAX))
+    {
+        LogError("Failure: DNS resolution returned no usable IPv4 or IPv6 addresses.");
+        socket_io_instance->last_connect_error = __FAILURE__;
+        result = __FAILURE__;
+    }
+    else if ((socket_io_instance->candidates = malloc(allocation_size)) == NULL)
+    {
+        LogError("Failure: unable to allocate the connection candidate list.");
+        socket_io_instance->last_connect_error = ENOMEM;
+        result = __FAILURE__;
+    }
+    else
+    {
+        int next_family = preferred_family;
+
+        socket_io_instance->address_list = address_list;
+        socket_io_instance->candidate_count = candidate_count;
+
+        for (candidate_index = 0; candidate_index < candidate_count; candidate_index++)
+        {
+            const struct addrinfo* candidate;
+            struct addrinfo** cursor = (next_family == AF_INET6) ? &ipv6_cursor : &ipv4_cursor;
+
+            candidate = take_next_candidate(cursor, next_family);
+            if (candidate == NULL)
+            {
+                next_family = (next_family == AF_INET6) ? AF_INET : AF_INET6;
+                cursor = (next_family == AF_INET6) ? &ipv6_cursor : &ipv4_cursor;
+                candidate = take_next_candidate(cursor, next_family);
+            }
+
+            socket_io_instance->candidates[candidate_index] = candidate;
+            next_family = (candidate->ai_family == AF_INET6) ? AF_INET : AF_INET6;
+        }
+
+        LogInfo("Prepared %zu connection candidates; preserving the operating system's %s preference.",
+            candidate_count, (preferred_family == AF_INET6) ? "IPv6" : "IPv4");
+        result = 0;
+    }
+
+    return result;
+}
 #endif
 
 /*this function will clone an option given by name and value*/
@@ -935,8 +1023,38 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                 {
                     size_t address_count = 0;
                     int connect_error = __FAILURE__;
+#ifndef DUAL_STACK_CONNECTION_RACING_ENABLED
                     struct addrinfo* address;
+#endif
 
+#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
+                    if (prepare_connection_candidates(socket_io_instance, addrInfo) != 0)
+                    {
+                        connect_error = socket_io_instance->last_connect_error;
+                        freeaddrinfo(addrInfo);
+                        result = __FAILURE__;
+                    }
+                    else
+                    {
+                        size_t address_index;
+                        address_count = socket_io_instance->candidate_count;
+                        result = __FAILURE__;
+
+                        for (address_index = 0; address_index < address_count; address_index++)
+                        {
+                            int timeout_ms = (CONNECT_TIMEOUT_SECONDS * 1000) / (int)address_count;
+
+                            if (connect_to_addrinfo(socket_io_instance,
+                                socket_io_instance->candidates[address_index], timeout_ms, &connect_error) == 0)
+                            {
+                                result = 0;
+                                break;
+                            }
+                        }
+
+                        dispose_connection_race(socket_io_instance);
+                    }
+#else
                     for (address = addrInfo; address != NULL; address = address->ai_next)
                     {
                         address_count++;
@@ -956,6 +1074,9 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                         }
                     }
 
+                    freeaddrinfo(addrInfo);
+#endif
+
                     if (result == 0)
                     {
                         socket_io_instance->on_bytes_received = on_bytes_received;
@@ -968,8 +1089,6 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                     {
                         open_result_detailed.code = connect_error;
                     }
-
-                    freeaddrinfo(addrInfo);
                 }
             }
         }

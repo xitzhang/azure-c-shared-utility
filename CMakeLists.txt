@@ -88,9 +88,9 @@ endif()
 
 if(${enable_dual_stack_connection_racing})
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR TIZENRT)
-        message(FATAL_ERROR "Dual-stack connection racing is currently supported only by the Linux Berkeley socket adapter")
+        message(FATAL_ERROR "Dual-stack connection racing is currently supported only for socket connections on Linux")
     elseif(exclude_aziotsharedutil_networking OR NOT use_socketio)
-        message(FATAL_ERROR "Dual-stack connection racing requires use_socketio=ON")
+        message(FATAL_ERROR "Dual-stack connection racing requires socket support (-Duse_socketio=ON)")
     endif()
 
     add_definitions(-DDUAL_STACK_CONNECTION_RACING_ENABLED)
