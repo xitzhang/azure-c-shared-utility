@@ -513,6 +513,10 @@ if(${build_as_dynamic})
     target_link_libraries(aziotsharedutil_dll ${aziotsharedutil_target_libs})
 endif()
 
+if(${enable_dual_stack_connection_racing})
+    add_subdirectory(tests/socketio_berkeley_async_open_ut)
+endif()
+
 if (${run_unittests} OR ${run_e2e_tests})
     include("dependencies-test.cmake")
     add_subdirectory(testtools)
