@@ -71,7 +71,8 @@
 #endif
 
 #ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-#define MAX_ACTIVE_CONNECTION_ATTEMPTS 1
+#define CONNECTION_ATTEMPT_DELAY_MS 250
+#define MAX_ACTIVE_CONNECTION_ATTEMPTS 2
 
 #ifndef SOCKETIO_BERKELEY_SOCKET
 #define SOCKETIO_BERKELEY_SOCKET socket
@@ -85,12 +86,31 @@
 #define SOCKETIO_BERKELEY_CLOCK_GETTIME clock_gettime
 #endif
 
+#ifndef SOCKETIO_BERKELEY_POLL
+#define SOCKETIO_BERKELEY_POLL poll
+#endif
+
+#ifndef SOCKETIO_BERKELEY_GETSOCKOPT
+#define SOCKETIO_BERKELEY_GETSOCKOPT getsockopt
+#endif
+
+#ifndef SOCKETIO_BERKELEY_CLOSE
+#define SOCKETIO_BERKELEY_CLOSE close
+#endif
+
+#ifndef SOCKETIO_BERKELEY_FCNTL_GETFL
+#define SOCKETIO_BERKELEY_FCNTL_GETFL(socket) fcntl((socket), F_GETFL, 0)
+#endif
+
+#ifndef SOCKETIO_BERKELEY_FCNTL_SETFL
+#define SOCKETIO_BERKELEY_FCNTL_SETFL(socket, flags) fcntl((socket), F_SETFL, (flags))
+#endif
+
 typedef enum CONNECTION_ATTEMPT_STATE_TAG
 {
     CONNECTION_ATTEMPT_NOT_STARTED,
     CONNECTION_ATTEMPT_CONNECTING,
-    CONNECTION_ATTEMPT_SUCCEEDED,
-    CONNECTION_ATTEMPT_FAILED
+    CONNECTION_ATTEMPT_SUCCEEDED
 } CONNECTION_ATTEMPT_STATE;
 
 typedef struct CONNECTION_ATTEMPT_TAG
@@ -100,7 +120,7 @@ typedef struct CONNECTION_ATTEMPT_TAG
     const struct addrinfo* address;
     CONNECTION_ATTEMPT_STATE state;
     uint64_t started_at_ms;
-    int error_code;
+    size_t candidate_index;
 } CONNECTION_ATTEMPT;
 
 #endif
@@ -144,6 +164,7 @@ typedef struct SOCKET_IO_INSTANCE_TAG
     CONNECTION_ATTEMPT attempts[MAX_ACTIVE_CONNECTION_ATTEMPTS];
     size_t active_attempt_count;
     uint64_t overall_deadline_ms;
+    uint64_t next_attempt_at_ms;
     ON_IO_OPEN_COMPLETE on_io_open_complete;
     void* on_io_open_complete_context;
     int last_connect_error;
@@ -169,6 +190,7 @@ static void initialize_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
     socket_io_instance->next_candidate_index = 0;
     socket_io_instance->active_attempt_count = 0;
     socket_io_instance->overall_deadline_ms = 0;
+    socket_io_instance->next_attempt_at_ms = 0;
     socket_io_instance->on_io_open_complete = NULL;
     socket_io_instance->on_io_open_complete_context = NULL;
     socket_io_instance->last_connect_error = __FAILURE__;
@@ -179,7 +201,7 @@ static void initialize_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
         socket_io_instance->attempts[attempt_index].address = NULL;
         socket_io_instance->attempts[attempt_index].state = CONNECTION_ATTEMPT_NOT_STARTED;
         socket_io_instance->attempts[attempt_index].started_at_ms = 0;
-        socket_io_instance->attempts[attempt_index].error_code = 0;
+        socket_io_instance->attempts[attempt_index].candidate_index = SIZE_MAX;
     }
 }
 
@@ -221,7 +243,7 @@ static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
     {
         if (socket_io_instance->attempts[attempt_index].socket != INVALID_SOCKET)
         {
-            close(socket_io_instance->attempts[attempt_index].socket);
+            SOCKETIO_BERKELEY_CLOSE(socket_io_instance->attempts[attempt_index].socket);
             socket_io_instance->attempts[attempt_index].socket = INVALID_SOCKET;
         }
     }
@@ -732,21 +754,19 @@ static void reset_connection_attempt(CONNECTION_ATTEMPT* attempt)
     attempt->address = NULL;
     attempt->state = CONNECTION_ATTEMPT_NOT_STARTED;
     attempt->started_at_ms = 0;
-    attempt->error_code = 0;
+    attempt->candidate_index = SIZE_MAX;
 }
 
 static void fail_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, CONNECTION_ATTEMPT* attempt, int error_code)
 {
     if (attempt->socket != INVALID_SOCKET)
     {
-        close(attempt->socket);
-        attempt->socket = INVALID_SOCKET;
+        SOCKETIO_BERKELEY_CLOSE(attempt->socket);
         socket_io_instance->active_attempt_count--;
     }
 
-    attempt->state = CONNECTION_ATTEMPT_FAILED;
-    attempt->error_code = error_code;
     socket_io_instance->last_connect_error = error_code;
+    reset_connection_attempt(attempt);
 }
 
 static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms)
@@ -777,14 +797,18 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
     }
     else
     {
+        attempt->candidate_index = socket_io_instance->next_candidate_index;
         address = socket_io_instance->candidates[socket_io_instance->next_candidate_index++];
         attempt->address = address;
         attempt->started_at_ms = current_time_ms;
+        socket_io_instance->next_attempt_at_ms =
+            (current_time_ms > (UINT64_MAX - CONNECTION_ATTEMPT_DELAY_MS)) ?
+            UINT64_MAX : current_time_ms + CONNECTION_ATTEMPT_DELAY_MS;
         attempt->socket = SOCKETIO_BERKELEY_SOCKET(address->ai_family, address->ai_socktype, address->ai_protocol);
 
         if (attempt->socket < SOCKET_SUCCESS)
         {
-            int socket_error = errno;
+            int socket_error = (errno != 0) ? errno : EIO;
             LogError("Failure: socket create failure %d (%s).", socket_error, strerror(socket_error));
             fail_connection_attempt(socket_io_instance, attempt, socket_error);
             result = __FAILURE__;
@@ -805,8 +829,8 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
             }
             else
 #endif //__APPLE__
-            if (((flags = fcntl(attempt->socket, F_GETFL, 0)) == -1) ||
-                (fcntl(attempt->socket, F_SETFL, flags | O_NONBLOCK) == -1))
+            if (((flags = SOCKETIO_BERKELEY_FCNTL_GETFL(attempt->socket)) == -1) ||
+                (SOCKETIO_BERKELEY_FCNTL_SETFL(attempt->socket, flags | O_NONBLOCK) == -1))
             {
                 int fcntl_error = errno;
                 LogError("Failure: fcntl failure %d (%s).", fcntl_error, strerror(fcntl_error));
@@ -841,13 +865,11 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
                 if (connect_result == 0)
                 {
                     attempt->state = CONNECTION_ATTEMPT_SUCCEEDED;
-                    attempt->error_code = 0;
                     result = 0;
                 }
                 else if (errno == EINPROGRESS)
                 {
                     attempt->state = CONNECTION_ATTEMPT_CONNECTING;
-                    attempt->error_code = 0;
                     LogInfo("Connect in progress for %s:%d (socket fd=%d).",
                         socket_io_instance->hostname, socket_io_instance->port, attempt->socket);
                     result = 0;
@@ -866,6 +888,51 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
     }
 
     return result;
+}
+
+static CONNECTION_ATTEMPT* find_successful_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance)
+{
+    size_t attempt_index;
+    CONNECTION_ATTEMPT* result = NULL;
+
+    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    {
+        CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
+        if ((attempt->state == CONNECTION_ATTEMPT_SUCCEEDED) &&
+            ((result == NULL) || (attempt->candidate_index < result->candidate_index)))
+        {
+            result = attempt;
+        }
+    }
+
+    return result;
+}
+
+static void start_available_connection_attempts(
+    SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms, int start_immediately)
+{
+    while ((socket_io_instance->next_candidate_index < socket_io_instance->candidate_count) &&
+        (socket_io_instance->active_attempt_count < MAX_ACTIVE_CONNECTION_ATTEMPTS))
+    {
+        int start_result;
+
+        if ((start_immediately == 0) &&
+            (socket_io_instance->active_attempt_count > 0) &&
+            (current_time_ms < socket_io_instance->next_attempt_at_ms))
+        {
+            break;
+        }
+
+        start_result = start_connection_attempt(socket_io_instance, current_time_ms);
+
+        if ((find_successful_connection_attempt(socket_io_instance) != NULL) ||
+            (start_result == 0))
+        {
+            break;
+        }
+
+        start_immediately = 1;
+    }
 }
 
 static void complete_connection_open(SOCKET_IO_INSTANCE* socket_io_instance, CONNECTION_ATTEMPT* winning_attempt)
@@ -919,20 +986,16 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
     int time_error;
     uint64_t current_time_ms;
     size_t attempt_index;
-    CONNECTION_ATTEMPT* attempt = NULL;
+    CONNECTION_ATTEMPT* winning_attempt;
+    struct pollfd poll_descriptors[MAX_ACTIVE_CONNECTION_ATTEMPTS];
+    CONNECTION_ATTEMPT* polled_attempts[MAX_ACTIVE_CONNECTION_ATTEMPTS];
+    nfds_t poll_descriptor_count = 0;
+    int attempt_failed = 0;
 
-    for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
+    winning_attempt = find_successful_connection_attempt(socket_io_instance);
+    if (winning_attempt != NULL)
     {
-        if (socket_io_instance->attempts[attempt_index].state != CONNECTION_ATTEMPT_NOT_STARTED)
-        {
-            attempt = &socket_io_instance->attempts[attempt_index];
-            break;
-        }
-    }
-
-    if ((attempt != NULL) && (attempt->state == CONNECTION_ATTEMPT_SUCCEEDED))
-    {
-        complete_connection_open(socket_io_instance, attempt);
+        complete_connection_open(socket_io_instance, winning_attempt);
         result = 1;
     }
     else if (get_monotonic_time_ms(&current_time_ms, &time_error) != 0)
@@ -942,94 +1005,107 @@ static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
     }
     else if (current_time_ms >= socket_io_instance->overall_deadline_ms)
     {
-        LogError("Failure: connection to %s:%d timed out.", socket_io_instance->hostname, socket_io_instance->port);
+        LogError("Failure: connection to %s:%d timed out.",
+            socket_io_instance->hostname, socket_io_instance->port);
         fail_connection_open(socket_io_instance, ETIMEDOUT);
         result = 1;
     }
     else
     {
-        if ((attempt != NULL) && (attempt->state == CONNECTION_ATTEMPT_CONNECTING))
+        int poll_result = 0;
+
+        for (attempt_index = 0; attempt_index < MAX_ACTIVE_CONNECTION_ATTEMPTS; attempt_index++)
         {
-            struct pollfd poll_descriptor = { 0 };
-            int poll_result;
-
-            poll_descriptor.fd = attempt->socket;
-            poll_descriptor.events = POLLOUT;
-            poll_result = poll(&poll_descriptor, 1, 0);
-
-            if (poll_result < 0)
+            CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
+            if (attempt->state == CONNECTION_ATTEMPT_CONNECTING)
             {
-                if (errno != EINTR)
-                {
-                    int poll_error = errno;
-                    LogError("Failure: poll failure %d (%s).", poll_error, strerror(poll_error));
-                    fail_connection_attempt(socket_io_instance, attempt, poll_error);
-                }
-            }
-            else if (poll_result > 0)
-            {
-                int socket_error = 0;
-                socklen_t socket_error_length = sizeof(socket_error);
-
-                if ((poll_descriptor.revents & POLLNVAL) != 0)
-                {
-                    LogError("Failure: poll reported an invalid connection socket.");
-                    fail_connection_attempt(socket_io_instance, attempt, EBADF);
-                }
-                else if (getsockopt(attempt->socket, SOL_SOCKET, SO_ERROR,
-                    &socket_error, &socket_error_length) != 0)
-                {
-                    int getsockopt_error = errno;
-                    LogError("Failure: getsockopt failure %d (%s).",
-                        getsockopt_error, strerror(getsockopt_error));
-                    fail_connection_attempt(socket_io_instance, attempt, getsockopt_error);
-                }
-                else if (socket_error != 0)
-                {
-                    LogError("Failure: connect to %s:%d completed with error %d (%s).",
-                        socket_io_instance->hostname, socket_io_instance->port,
-                        socket_error, strerror(socket_error));
-                    fail_connection_attempt(socket_io_instance, attempt, socket_error);
-                }
-                else
-                {
-                    attempt->state = CONNECTION_ATTEMPT_SUCCEEDED;
-                }
+                poll_descriptors[poll_descriptor_count].fd = attempt->socket;
+                poll_descriptors[poll_descriptor_count].events = POLLOUT;
+                poll_descriptors[poll_descriptor_count].revents = 0;
+                polled_attempts[poll_descriptor_count] = attempt;
+                poll_descriptor_count++;
             }
         }
 
-        if ((attempt != NULL) && (attempt->state == CONNECTION_ATTEMPT_SUCCEEDED))
+        if (poll_descriptor_count > 0)
         {
-            complete_connection_open(socket_io_instance, attempt);
+            poll_result = SOCKETIO_BERKELEY_POLL(poll_descriptors, poll_descriptor_count, 0);
+        }
+
+        if ((poll_result < 0) && (errno != EINTR))
+        {
+            int poll_error = (errno != 0) ? errno : EIO;
+            LogError("Failure: poll failure %d (%s).", poll_error, strerror(poll_error));
+            fail_connection_open(socket_io_instance, poll_error);
             result = 1;
         }
-        else if ((attempt != NULL) && (attempt->state == CONNECTION_ATTEMPT_FAILED))
+        else
         {
-            reset_connection_attempt(attempt);
-            if (socket_io_instance->next_candidate_index < socket_io_instance->candidate_count)
+            for (attempt_index = 0; attempt_index < poll_descriptor_count; attempt_index++)
             {
-                (void)start_connection_attempt(socket_io_instance, current_time_ms);
+                CONNECTION_ATTEMPT* attempt = polled_attempts[attempt_index];
+
+                if (poll_descriptors[attempt_index].revents != 0)
+                {
+                    int socket_error = 0;
+                    socklen_t socket_error_length = sizeof(socket_error);
+
+                    if ((poll_descriptors[attempt_index].revents & POLLNVAL) != 0)
+                    {
+                        LogError("Failure: poll reported an invalid connection socket.");
+                        fail_connection_attempt(socket_io_instance, attempt, EBADF);
+                        attempt_failed = 1;
+                    }
+                    else if (SOCKETIO_BERKELEY_GETSOCKOPT(attempt->socket, SOL_SOCKET, SO_ERROR,
+                        &socket_error, &socket_error_length) != 0)
+                    {
+                        int getsockopt_error = (errno != 0) ? errno : EIO;
+                        LogError("Failure: getsockopt failure %d (%s).",
+                            getsockopt_error, strerror(getsockopt_error));
+                        fail_connection_attempt(socket_io_instance, attempt, getsockopt_error);
+                        attempt_failed = 1;
+                    }
+                    else if (socket_error != 0)
+                    {
+                        LogError("Failure: connect to %s:%d completed with error %d (%s).",
+                            socket_io_instance->hostname, socket_io_instance->port,
+                            socket_error, strerror(socket_error));
+                        fail_connection_attempt(socket_io_instance, attempt, socket_error);
+                        attempt_failed = 1;
+                    }
+                    else
+                    {
+                        attempt->state = CONNECTION_ATTEMPT_SUCCEEDED;
+                    }
+                }
+            }
+
+            winning_attempt = find_successful_connection_attempt(socket_io_instance);
+            if (winning_attempt != NULL)
+            {
+                complete_connection_open(socket_io_instance, winning_attempt);
+                result = 1;
             }
             else
             {
-                int connect_error = socket_io_instance->last_connect_error;
-                LogError("Failure: all prepared addresses failed for %s:%d; last error was %d.",
-                    socket_io_instance->hostname, socket_io_instance->port, connect_error);
-                fail_connection_open(socket_io_instance, connect_error);
-                result = 1;
+                start_available_connection_attempts(socket_io_instance, current_time_ms, attempt_failed);
+                winning_attempt = find_successful_connection_attempt(socket_io_instance);
+
+                if (winning_attempt != NULL)
+                {
+                    complete_connection_open(socket_io_instance, winning_attempt);
+                    result = 1;
+                }
+                else if ((socket_io_instance->active_attempt_count == 0) &&
+                    (socket_io_instance->next_candidate_index >= socket_io_instance->candidate_count))
+                {
+                    int connect_error = socket_io_instance->last_connect_error;
+                    LogError("Failure: all prepared addresses failed for %s:%d; last error was %d.",
+                        socket_io_instance->hostname, socket_io_instance->port, connect_error);
+                    fail_connection_open(socket_io_instance, connect_error);
+                    result = 1;
+                }
             }
-        }
-        else if ((attempt == NULL) && (socket_io_instance->next_candidate_index < socket_io_instance->candidate_count))
-        {
-            (void)start_connection_attempt(socket_io_instance, current_time_ms);
-        }
-        else if (attempt == NULL)
-        {
-            int connect_error = socket_io_instance->last_connect_error;
-            LogError("Failure: connection candidates were exhausted for %s:%d.",
-                socket_io_instance->hostname, socket_io_instance->port);
-            fail_connection_open(socket_io_instance, connect_error);
-            result = 1;
         }
     }
 
@@ -1419,7 +1495,7 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                             socket_io_instance->on_io_error_context = on_io_error_context;
                             socket_io_instance->io_state = IO_STATE_OPENING;
 
-                            (void)start_connection_attempt(socket_io_instance, current_time_ms);
+                            start_available_connection_attempts(socket_io_instance, current_time_ms, 1);
                             open_pending = 1;
                             result = 0;
                         }
