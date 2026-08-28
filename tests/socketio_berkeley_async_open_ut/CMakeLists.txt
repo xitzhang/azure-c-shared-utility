@@ -14,6 +14,12 @@ target_include_directories(socketio_berkeley_async_open_ut_exe PRIVATE
 
 target_link_libraries(socketio_berkeley_async_open_ut_exe aziotsharedutil)
 
+if(use_openssl AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(socketio_berkeley_async_open_ut_exe PRIVATE
+        SOCKETIO_BERKELEY_ASYNC_OPEN_TLS_LAYER_TEST
+    )
+endif()
+
 add_test(
     NAME socketio_berkeley_async_open_ut
     COMMAND socketio_berkeley_async_open_ut_exe
