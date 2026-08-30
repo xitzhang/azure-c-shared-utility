@@ -34,6 +34,7 @@ static int test_getsockopt(
 static int test_close(int socket);
 static int test_fcntl_getfl(int socket);
 static int test_fcntl_setfl(int socket, int flags);
+static int test_set_target_network_interface(int socket, char* mac_address);
 static void* test_race_malloc(size_t size);
 static void test_race_free(void* pointer);
 
@@ -48,6 +49,7 @@ static void test_race_free(void* pointer);
 #define SOCKETIO_BERKELEY_CLOSE test_close
 #define SOCKETIO_BERKELEY_FCNTL_GETFL test_fcntl_getfl
 #define SOCKETIO_BERKELEY_FCNTL_SETFL test_fcntl_setfl
+#define SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE test_set_target_network_interface
 #define SOCKETIO_BERKELEY_RACE_MALLOC test_race_malloc
 #define SOCKETIO_BERKELEY_RACE_FREE test_race_free
 #include "../../adapters/socketio_berkeley.c"
@@ -82,8 +84,14 @@ typedef struct CALLBACK_STATE_TAG
 static struct addrinfo mock_addresses[MOCK_MAX_CANDIDATES];
 static struct sockaddr_storage mock_socket_addresses[MOCK_MAX_CANDIDATES];
 static size_t mock_candidate_count;
+static int mock_getaddrinfo_succeeds_with_null;
 static uint64_t mock_time_ms;
+static int mock_clock_call_count;
+static int mock_clock_fail_call;
+static int mock_clock_error;
 static int mock_socket_count;
+static int mock_socket_failures[MOCK_MAX_CANDIDATES];
+static int mock_socket_failure_errors[MOCK_MAX_CANDIDATES];
 static int mock_socket_families[MOCK_MAX_CANDIDATES];
 static MOCK_CONNECT_RESULT mock_connect_results[MOCK_MAX_CANDIDATES];
 static int mock_connect_errors[MOCK_MAX_CANDIDATES];
@@ -91,7 +99,19 @@ static int mock_poll_ready[MOCK_MAX_CANDIDATES];
 static int mock_socket_errors[MOCK_MAX_CANDIDATES];
 static int mock_close_counts[MOCK_MAX_CANDIDATES];
 static int mock_poll_call_count;
+static int mock_poll_fail_call;
+static int mock_poll_error;
 static nfds_t mock_max_polled_descriptor_count;
+static int mock_getsockopt_call_count;
+static int mock_getsockopt_failures[MOCK_MAX_CANDIDATES];
+static int mock_getsockopt_errors[MOCK_MAX_CANDIDATES];
+static int mock_fcntl_getfl_failures[MOCK_MAX_CANDIDATES];
+static int mock_fcntl_getfl_errors[MOCK_MAX_CANDIDATES];
+static int mock_fcntl_setfl_failures[MOCK_MAX_CANDIDATES];
+static int mock_fcntl_setfl_errors[MOCK_MAX_CANDIDATES];
+static int mock_interface_bind_call_count;
+static int mock_interface_bind_failures[MOCK_MAX_CANDIDATES];
+static int mock_interface_bind_errors[MOCK_MAX_CANDIDATES];
 static int mock_freeaddrinfo_count;
 static int mock_race_allocation_call_count;
 static int mock_race_allocation_fail_call;
@@ -114,17 +134,35 @@ static void reset_mocks(void)
 {
     (void)memset(mock_addresses, 0, sizeof(mock_addresses));
     (void)memset(mock_socket_addresses, 0, sizeof(mock_socket_addresses));
+    (void)memset(mock_socket_failures, 0, sizeof(mock_socket_failures));
+    (void)memset(mock_socket_failure_errors, 0, sizeof(mock_socket_failure_errors));
     (void)memset(mock_socket_families, 0, sizeof(mock_socket_families));
     (void)memset(mock_connect_results, 0, sizeof(mock_connect_results));
     (void)memset(mock_connect_errors, 0, sizeof(mock_connect_errors));
     (void)memset(mock_poll_ready, 0, sizeof(mock_poll_ready));
     (void)memset(mock_socket_errors, 0, sizeof(mock_socket_errors));
+    (void)memset(mock_getsockopt_failures, 0, sizeof(mock_getsockopt_failures));
+    (void)memset(mock_getsockopt_errors, 0, sizeof(mock_getsockopt_errors));
+    (void)memset(mock_fcntl_getfl_failures, 0, sizeof(mock_fcntl_getfl_failures));
+    (void)memset(mock_fcntl_getfl_errors, 0, sizeof(mock_fcntl_getfl_errors));
+    (void)memset(mock_fcntl_setfl_failures, 0, sizeof(mock_fcntl_setfl_failures));
+    (void)memset(mock_fcntl_setfl_errors, 0, sizeof(mock_fcntl_setfl_errors));
+    (void)memset(mock_interface_bind_failures, 0, sizeof(mock_interface_bind_failures));
+    (void)memset(mock_interface_bind_errors, 0, sizeof(mock_interface_bind_errors));
     (void)memset(mock_close_counts, 0, sizeof(mock_close_counts));
     mock_candidate_count = 0;
+    mock_getaddrinfo_succeeds_with_null = 0;
     mock_time_ms = 1000;
+    mock_clock_call_count = 0;
+    mock_clock_fail_call = 0;
+    mock_clock_error = 0;
     mock_socket_count = 0;
     mock_poll_call_count = 0;
+    mock_poll_fail_call = 0;
+    mock_poll_error = 0;
     mock_max_polled_descriptor_count = 0;
+    mock_getsockopt_call_count = 0;
+    mock_interface_bind_call_count = 0;
     mock_freeaddrinfo_count = 0;
     mock_race_allocation_call_count = 0;
     mock_race_allocation_fail_call = 0;
@@ -154,8 +192,16 @@ static int test_getaddrinfo(
     (void)node;
     (void)service;
     (void)hints;
-    *result = (mock_candidate_count == 0) ? NULL : &mock_addresses[0];
-    return (mock_candidate_count == 0) ? EAI_NONAME : 0;
+    if (mock_getaddrinfo_succeeds_with_null != 0)
+    {
+        *result = NULL;
+        return 0;
+    }
+    else
+    {
+        *result = (mock_candidate_count == 0) ? NULL : &mock_addresses[0];
+        return (mock_candidate_count == 0) ? EAI_NONAME : 0;
+    }
 }
 
 static void test_freeaddrinfo(struct addrinfo* result)
@@ -173,6 +219,12 @@ static int test_socket(int domain, int type, int protocol)
     if (socket_index >= MOCK_MAX_CANDIDATES)
     {
         errno = EMFILE;
+        return INVALID_SOCKET;
+    }
+    else if (mock_socket_failures[socket_index] != 0)
+    {
+        errno = (mock_socket_failure_errors[socket_index] == 0) ? EMFILE :
+            mock_socket_failure_errors[socket_index];
         return INVALID_SOCKET;
     }
 
@@ -204,9 +256,15 @@ static int test_connect(int socket, const struct sockaddr* address, socklen_t ad
 
 static int test_clock_gettime(clockid_t clock_id, struct timespec* current_time)
 {
+    mock_clock_call_count++;
     if (clock_id != CLOCK_MONOTONIC)
     {
         errno = EINVAL;
+        return __FAILURE__;
+    }
+    else if (mock_clock_fail_call == mock_clock_call_count)
+    {
+        errno = (mock_clock_error == 0) ? EIO : mock_clock_error;
         return __FAILURE__;
     }
 
@@ -228,7 +286,12 @@ static int test_poll(struct pollfd* descriptors, nfds_t descriptor_count, int ti
     if (timeout != 0)
     {
         errno = EINVAL;
-        return __FAILURE__;
+        return -1;
+    }
+    else if (mock_poll_fail_call == mock_poll_call_count)
+    {
+        errno = (mock_poll_error == 0) ? EIO : mock_poll_error;
+        return -1;
     }
 
     for (descriptor_index = 0; descriptor_index < descriptor_count; descriptor_index++)
@@ -249,11 +312,18 @@ static int test_getsockopt(
     int socket, int level, int option_name, void* option_value, socklen_t* option_length)
 {
     int socket_index = socket_index_from_descriptor(socket);
+    mock_getsockopt_call_count++;
 
     if ((level != SOL_SOCKET) || (option_name != SO_ERROR) ||
         (option_value == NULL) || (option_length == NULL) || (*option_length < sizeof(int)))
     {
         errno = EINVAL;
+        return __FAILURE__;
+    }
+    else if (mock_getsockopt_failures[socket_index] != 0)
+    {
+        errno = (mock_getsockopt_errors[socket_index] == 0) ? EIO :
+            mock_getsockopt_errors[socket_index];
         return __FAILURE__;
     }
 
@@ -274,15 +344,49 @@ static int test_close(int socket)
 
 static int test_fcntl_getfl(int socket)
 {
-    (void)socket;
-    return 0;
+    int socket_index = socket_index_from_descriptor(socket);
+    if (mock_fcntl_getfl_failures[socket_index] != 0)
+    {
+        errno = mock_fcntl_getfl_errors[socket_index];
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 static int test_fcntl_setfl(int socket, int flags)
 {
-    (void)socket;
+    int socket_index = socket_index_from_descriptor(socket);
     (void)flags;
-    return 0;
+    if (mock_fcntl_setfl_failures[socket_index] != 0)
+    {
+        errno = mock_fcntl_setfl_errors[socket_index];
+        return -1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+static int test_set_target_network_interface(int socket, char* mac_address)
+{
+    int socket_index = socket_index_from_descriptor(socket);
+    (void)mac_address;
+    mock_interface_bind_call_count++;
+
+    if (mock_interface_bind_failures[socket_index] != 0)
+    {
+        errno = (mock_interface_bind_errors[socket_index] == 0) ? ENODEV :
+            mock_interface_bind_errors[socket_index];
+        return __FAILURE__;
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 static void* test_race_malloc(size_t size)
@@ -397,6 +501,397 @@ static void destroy_after_success(SOCKET_IO_INSTANCE* socket_io)
 {
     socket_io->socket = INVALID_SOCKET;
     socketio_destroy(socket_io);
+}
+
+static int initial_clock_failure_cleans_up_and_allows_reopen(void)
+{
+    const int families[] = { AF_INET6 };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 1);
+    mock_clock_fail_call = 1;
+    mock_clock_error = EFAULT;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == EFAULT);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(socket_io->socket == INVALID_SOCKET);
+    TEST_CHECK(socket_io->address_list == NULL);
+    TEST_CHECK(socket_io->candidates == NULL);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->poll_descriptors == NULL);
+    TEST_CHECK(socket_io->polled_attempt_indices == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete_context == NULL);
+    TEST_CHECK(socket_io->on_bytes_received == NULL);
+    TEST_CHECK(socket_io->on_io_error == NULL);
+    TEST_CHECK(mock_socket_count == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+
+    mock_clock_fail_call = 0;
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(socket_io->io_state == IO_STATE_OPENING);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(mock_socket_count == 1);
+    TEST_CHECK(socketio_close(socket_io, NULL, NULL) == 0);
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int dowork_clock_failure_closes_multiple_attempts_and_allows_reopen(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+    int poll_calls_before_failure;
+
+    reset_mocks();
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(start_two_pending_attempts(socket_io, &callback_state, families) == 0);
+    TEST_CHECK(socket_io->active_attempt_count == 2);
+    poll_calls_before_failure = mock_poll_call_count;
+    mock_clock_fail_call = mock_clock_call_count + 1;
+    mock_clock_error = EOWNERDEAD;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == EOWNERDEAD);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete == NULL);
+    TEST_CHECK(socket_io->on_bytes_received == NULL);
+    TEST_CHECK(socket_io->on_io_error == NULL);
+    TEST_CHECK(mock_poll_call_count == poll_calls_before_failure);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+
+    mock_clock_fail_call = 0;
+    set_mock_candidates(families, 1);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(socket_io->io_state == IO_STATE_OPENING);
+    TEST_CHECK(mock_socket_count == 3);
+    TEST_CHECK(socketio_close(socket_io, NULL, NULL) == 0);
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(mock_close_counts[2] == 1);
+    socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int socket_creation_failure_is_paced_before_later_success(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 2);
+    mock_socket_failures[0] = 1;
+    mock_socket_failure_errors[0] = EMFILE;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(callback_state.open_count == 0);
+    TEST_CHECK(mock_socket_count == 1);
+    TEST_CHECK(socket_io->active_attempt_count == 0);
+
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS - 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 1);
+    mock_time_ms++;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+    TEST_CHECK(socket_io->active_attempt_count == 1);
+    TEST_CHECK(socket_io->attempts[0].started_at_ms == 1250);
+
+    mock_poll_ready[1] = 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
+    TEST_CHECK(mock_close_counts[0] == 0);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int socket_creation_failures_report_last_error_on_exhaustion(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 2);
+    mock_socket_failures[0] = 1;
+    mock_socket_failure_errors[0] = EMFILE;
+    mock_socket_failures[1] = 1;
+    mock_socket_failure_errors[1] = ENFILE;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == ENFILE);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(mock_socket_count == 2);
+    TEST_CHECK(mock_close_counts[0] == 0);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    socketio_destroy(socket_io);
+    return 0;
+}
+
+static int fcntl_get_failure_is_paced_before_later_success(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 2);
+    mock_fcntl_getfl_failures[0] = 1;
+    mock_fcntl_getfl_errors[0] = EBADF;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS - 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 1);
+    mock_time_ms++;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+    TEST_CHECK(socket_io->attempts[0].started_at_ms == 1250);
+    mock_poll_ready[1] = 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int fcntl_set_failure_with_zero_errno_falls_back_to_eio(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 2);
+    mock_fcntl_setfl_failures[0] = 1;
+    mock_fcntl_setfl_errors[0] = EACCES;
+    mock_fcntl_setfl_failures[1] = 1;
+    mock_fcntl_setfl_errors[1] = 0;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == EIO);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    socketio_destroy(socket_io);
+    return 0;
+}
+
+static int poll_failure_fails_once_without_interpreting_readiness(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(start_two_pending_attempts(socket_io, &callback_state, families) == 0);
+    mock_poll_ready[0] = 1;
+    mock_poll_ready[1] = 1;
+    mock_poll_fail_call = mock_poll_call_count + 1;
+    mock_poll_error = EIO;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == EIO);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(mock_getsockopt_call_count == 0);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    socketio_destroy(socket_io);
+    return 0;
+}
+
+static int getsockopt_failure_only_removes_affected_attempt(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(start_two_pending_attempts(socket_io, &callback_state, families) == 0);
+    mock_poll_ready[0] = 1;
+    mock_poll_ready[1] = 1;
+    mock_getsockopt_failures[0] = 1;
+    mock_getsockopt_errors[0] = ENOPROTOOPT;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_getsockopt_call_count == 2);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int getsockopt_failure_propagates_on_exhaustion(void)
+{
+    const int families[] = { AF_INET6 };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 1);
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    mock_poll_ready[0] = 1;
+    mock_getsockopt_failures[0] = 1;
+    mock_getsockopt_errors[0] = ENOTSOCK;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == ENOTSOCK);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    socketio_destroy(socket_io);
+    return 0;
+}
+
+static int interface_binding_failure_is_paced_before_later_success(void)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    const char target_mac_address[] = "00:11:22:33:44:55";
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    set_mock_candidates(families, 2);
+    mock_interface_bind_failures[0] = 1;
+    mock_interface_bind_errors[0] = ENODEV;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(socketio_setoption(
+        socket_io, OPTION_NET_INT_MAC_ADDRESS, target_mac_address) == 0);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(mock_interface_bind_call_count == 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    mock_time_ms += CONNECTION_ATTEMPT_DELAY_MS - 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 1);
+    mock_time_ms++;
+    socketio_dowork(socket_io);
+    TEST_CHECK(mock_socket_count == 2);
+    TEST_CHECK(mock_interface_bind_call_count == 2);
+    TEST_CHECK(socket_io->attempts[0].started_at_ms == 1250);
+    mock_poll_ready[1] = 1;
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_OK);
+    TEST_CHECK(socket_io->socket == MOCK_SOCKET_BASE + 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_close_counts[1] == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    destroy_after_success(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
+}
+
+static int getaddrinfo_success_with_null_list_fails_cleanly_and_allows_reopen(void)
+{
+    const int families[] = { AF_INET6 };
+    CALLBACK_STATE callback_state = { 0 };
+    SOCKET_IO_INSTANCE* socket_io;
+
+    reset_mocks();
+    mock_getaddrinfo_succeeds_with_null = 1;
+    socket_io = create_test_socket_io();
+    TEST_CHECK(socket_io != NULL);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(callback_state.last_open_result.result == IO_OPEN_ERROR);
+    TEST_CHECK(callback_state.last_open_result.code == EADDRNOTAVAIL);
+    TEST_CHECK(socket_io->io_state == IO_STATE_CLOSED);
+    TEST_CHECK(socket_io->socket == INVALID_SOCKET);
+    TEST_CHECK(socket_io->address_list == NULL);
+    TEST_CHECK(socket_io->attempts == NULL);
+    TEST_CHECK(socket_io->on_io_open_complete == NULL);
+    TEST_CHECK(mock_socket_count == 0);
+    TEST_CHECK(mock_freeaddrinfo_count == 0);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+
+    mock_getaddrinfo_succeeds_with_null = 0;
+    set_mock_candidates(families, 1);
+    TEST_CHECK(open_test_socket_io(socket_io, &callback_state) == 0);
+    TEST_CHECK(socket_io->io_state == IO_STATE_OPENING);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(socketio_close(socket_io, NULL, NULL) == 0);
+    socketio_dowork(socket_io);
+    TEST_CHECK(callback_state.open_count == 1);
+    TEST_CHECK(mock_close_counts[0] == 1);
+    TEST_CHECK(mock_freeaddrinfo_count == 1);
+    socketio_destroy(socket_io);
+    TEST_CHECK_RACE_ALLOCATIONS_RELEASED();
+    return 0;
 }
 
 static int close_during_opening_drops_socket_open_callback(void)
@@ -1021,7 +1516,18 @@ int main(void)
 {
     int result;
 
-    result = close_during_opening_drops_socket_open_callback();
+    result = initial_clock_failure_cleans_up_and_allows_reopen();
+    if (result == 0) result = dowork_clock_failure_closes_multiple_attempts_and_allows_reopen();
+    if (result == 0) result = socket_creation_failure_is_paced_before_later_success();
+    if (result == 0) result = socket_creation_failures_report_last_error_on_exhaustion();
+    if (result == 0) result = fcntl_get_failure_is_paced_before_later_success();
+    if (result == 0) result = fcntl_set_failure_with_zero_errno_falls_back_to_eio();
+    if (result == 0) result = poll_failure_fails_once_without_interpreting_readiness();
+    if (result == 0) result = getsockopt_failure_only_removes_affected_attempt();
+    if (result == 0) result = getsockopt_failure_propagates_on_exhaustion();
+    if (result == 0) result = interface_binding_failure_is_paced_before_later_success();
+    if (result == 0) result = getaddrinfo_success_with_null_list_fails_cleanly_and_allows_reopen();
+    if (result == 0) result = close_during_opening_drops_socket_open_callback();
     if (result == 0) result = failed_open_can_be_reopened_without_close();
 #ifdef SOCKETIO_BERKELEY_ASYNC_OPEN_TLS_LAYER_TEST
     if (result == 0) result = tls_close_while_berkeley_is_opening_cancels_application_once();

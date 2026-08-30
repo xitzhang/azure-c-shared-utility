@@ -105,6 +105,10 @@
 #define SOCKETIO_BERKELEY_FCNTL_SETFL(socket, flags) fcntl((socket), F_SETFL, (flags))
 #endif
 
+#ifndef SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE
+#define SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE set_target_network_interface
+#endif
+
 #ifndef SOCKETIO_BERKELEY_RACE_MALLOC
 #define SOCKETIO_BERKELEY_RACE_MALLOC malloc
 #endif
@@ -885,7 +889,8 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
 #ifndef __APPLE__
             errno = 0;
             if ((socket_io_instance->target_mac_address != NULL) &&
-                (set_target_network_interface(attempt->socket, socket_io_instance->target_mac_address) != 0))
+                (SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE(
+                    attempt->socket, socket_io_instance->target_mac_address) != 0))
             {
                 int interface_error = (errno != 0) ? errno : ENODEV;
                 LogError("Failure: failed selecting target network interface (MACADDR=%s).",
@@ -898,7 +903,7 @@ static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint
             if (((flags = SOCKETIO_BERKELEY_FCNTL_GETFL(attempt->socket)) == -1) ||
                 (SOCKETIO_BERKELEY_FCNTL_SETFL(attempt->socket, flags | O_NONBLOCK) == -1))
             {
-                int fcntl_error = errno;
+                int fcntl_error = (errno != 0) ? errno : EIO;
                 LogError("Failure: fcntl failure %d (%s).", fcntl_error, strerror(fcntl_error));
                 fail_connection_attempt(socket_io_instance, attempt, fcntl_error);
                 result = __FAILURE__;
@@ -1507,7 +1512,10 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                     if (prepare_connection_candidates(socket_io_instance, addrInfo) != 0)
                     {
                         connect_error = socket_io_instance->last_connect_error;
-                        SOCKETIO_BERKELEY_FREEADDRINFO(addrInfo);
+                        if (addrInfo != NULL)
+                        {
+                            SOCKETIO_BERKELEY_FREEADDRINFO(addrInfo);
+                        }
                         result = __FAILURE__;
                     }
                     else

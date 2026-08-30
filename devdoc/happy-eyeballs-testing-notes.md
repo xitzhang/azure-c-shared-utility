@@ -36,8 +36,7 @@ All mini-test cases passed, with no AddressSanitizer findings.
 
 ## Current asynchronous-open implementation record
 
-The feature-enabled Berkeley path now has an **uncommitted**, staggered
-asynchronous-open flow:
+The feature-enabled Berkeley path has a staggered asynchronous-open flow:
 
 - RFC 8305 does not mandate a two-attempt cap. The implementation dynamically
   allocates attempt and poll state for the complete ordered candidate list.
@@ -58,17 +57,21 @@ deadline is rejected as `ETIMEDOUT`.
 
 ### Completed async-open fixes
 
-- Closing during `IO_STATE_OPENING` now reports exactly one
-  `IO_OPEN_CANCELLED` callback and leaves no stale open callback for later
-  `socketio_dowork` calls.
+- Closing Berkeley `socketio` during `IO_STATE_OPENING` cleans up the race and
+  drops the pending leaf open callback. It does not report
+  `IO_OPEN_CANCELLED`; this matches the current upstream Berkeley close
+  contract and prevents layered callers from receiving duplicate completion.
+- Closing TLS-over-Berkeley during `IO_STATE_OPENING` reports exactly one
+  application-level `IO_OPEN_CANCELLED` from the TLS layer. The Berkeley layer
+  performs only its cleanup and close completion, and later
+  `socketio_dowork` calls cannot emit a stale open callback.
 - A failed asynchronous open now returns the handle to the closed state, so the
   same handle supports an immediate reopen without an intervening close.
 - A recorded successful attempt now completes before deadline evaluation, so
   success is not changed into a timeout when work runs at or past the deadline.
-- Closing or destroying a handle with multiple active attempts closes every
-  attempt
-  descriptor. Close reports exactly one cancellation callback, destroy reports
-  none, and later work cannot produce a stale callback.
+- Closing or destroying a Berkeley handle with multiple active attempts closes
+  every attempt descriptor. Direct Berkeley close and destroy report no open
+  cancellation callback, and later work cannot produce a stale callback.
 
 ### Persistent deterministic regression target
 
@@ -98,9 +101,12 @@ checks and verifies:
 
 The target also retains the late-success-at-deadline regression: an already
 recorded success wins before deadline evaluation, while success not observed
-until polling at or after the deadline is rejected. Cancellation with
-exactly-once/no-stale-callback behavior and immediate retry after asynchronous
-failure remain persistently covered as well.
+until polling at or after the deadline is rejected. Direct Berkeley close
+verifies zero open callbacks and no stale callback. When OpenSSL is available,
+the same target composes the production TLS and Berkeley layers and verifies
+that closing TLS while Berkeley is opening reports exactly one
+application-level `IO_OPEN_CANCELLED`. Immediate retry after asynchronous
+failure remains persistently covered as well.
 
 ## Linux build and configuration checks
 
@@ -123,6 +129,91 @@ Standard validation on the Linux `client-vm` produced these results:
 An independent review found no runtime defect. It identified a gap in allocation
 failure coverage, which was fixed by the four independent injection cases
 described above.
+
+## Critical deterministic gate before the Carbon commit
+
+These checks exercise the current implementation without requiring controlled
+DNS, routing, or public endpoints. They are the minimum local/CI gate before
+moving the Carbon pin forward:
+
+- build the utility with racing enabled and run
+  `socketio_berkeley_async_open_ut`;
+- run the same Berkeley target with AddressSanitizer and LeakSanitizer;
+- build the utility with racing disabled and verify that the feature-only
+  Berkeley target is absent;
+- run `httpapi_curl_dual_stack_ut` in curl-backed configurations;
+- configure and build Carbon with the pinned utility in external-default,
+  external-OpenSSL-3, inline, and explicit-opt-out configurations;
+- verify that both Carbon external utility variants receive
+  `enable_dual_stack_connection_racing=ON` by default on Linux;
+- verify that the inline build inherits the Linux default and that explicit
+  opt-out removes `DUAL_STACK_CONNECTION_RACING_ENABLED`; and
+- run the existing Carbon PAL/networking CTests discovered in those
+  configurations, with explicit native exit codes.
+
+Before committing, `git diff --check` must pass in the utility repository and
+`git diff --cached --check` must pass in Carbon. Carbon must contain only its
+intended CMake wiring and the exact utility gitlink.
+
+### Additional critical unit tests completed
+
+The deterministic Berkeley target now covers these racer error paths:
+
+| Test | Assertions covered |
+| --- | --- |
+| Initial monotonic-clock failure | Open fails synchronously with the clock error; DNS, candidate, attempt, and poll allocations are released; no descriptor or saved callback remains; immediate retry succeeds. |
+| Clock failure during `socketio_dowork` | More than one active descriptor closes; one open-error callback reports the clock error; all race allocations are released; later work emits no callback; immediate retry is possible. |
+| Candidate socket creation failure | No invalid descriptor is closed; the next candidate remains paced by 250 ms and can win; exhaustion reports the final meaningful socket error once. |
+| Nonblocking `fcntl` failure | An owned descriptor closes exactly once; the next candidate remains paced by 250 ms and can win; exhaustion reports a meaningful error even if `errno` was zero. |
+| `poll` system-call failure | Readiness is not interpreted after the failed call; the race reports one open error, closes all attempts, releases all allocations, and emits no stale callback. |
+| `getsockopt(SO_ERROR)` system-call failure | Only the affected attempt fails; another active attempt can win; exhaustion reports the syscall error once. |
+| Configured interface-binding failure | The test enters the configured-interface path; the failed descriptor closes, the later candidate observes 250 ms pacing and can win, and no callback or allocation leaks. |
+| Resolver success with a null address list | Open fails cleanly without calling `freeaddrinfo(NULL)`, starting a socket, or retaining callback/race state; immediate retry succeeds. |
+
+Tests should use the existing deterministic hooks, track descriptor ownership
+and race allocations, and finish by asserting no outstanding allocations,
+invalid frees, duplicate closes, or stale callbacks. Production hooks must
+remain inert outside the focused test target.
+
+### Current Carbon test status
+
+The four Linux Carbon PAL build configurations have passed with the utility
+gitlink at `06df39501dfc65fbfba1c23a4e4f195d02069c24`.
+
+Carbon registers no CTest entries for this surface, so its focused Catch2
+executable was run directly with tests enabled:
+
+| Configuration | Focused tests | Result |
+| --- | --- | --- |
+| External utility, racing ON | `WebSocket DNS lookup failed`; `HTTP DNS lookup failed` | 2 cases, 17 assertions passed |
+| Inline utility, racing ON | `WebSocket DNS lookup failed`; `HTTP DNS lookup failed` | 2 cases, 17 assertions passed |
+| External utility, explicit opt-out | `WebSocket DNS lookup failed`; `HTTP DNS lookup failed` | 2 cases, 17 assertions passed |
+
+The external racing-ON build compiled both normal and OpenSSL 3 utility/PAL
+variants, and the OpenSSL 3 PAL was confirmed loaded by the focused run.
+Configuration caches and compile commands confirmed the racing definition is
+present in both default external variants and the inline build, and absent from
+both external variants under explicit opt-out.
+
+The local-server `basic` tests were not run because restoring
+`test_server.dll` from the required private feed returned HTTP 401. This is an
+environment/access blocker rather than a test failure and must not be recorded
+as passing.
+
+### Final deterministic error-path validation
+
+On the Linux `client-vm`:
+
+- the feature-ON plain build passed;
+- `socketio_berkeley_async_open_ut` passed 1/1;
+- the AddressSanitizer and LeakSanitizer run passed 1/1;
+- the curl regression tests passed 2/2;
+- the feature-OFF build passed with the Berkeley racer target absent; and
+- `git diff --check` passed.
+
+Eleven new cases cover the error paths summarized above. Real interface
+enumeration remains mocked; the test exercises the configured binding branch
+and its racer ownership/pacing behavior through an inert production hook.
 
 ## HTTPAPI/libcurl guarantee
 
@@ -174,12 +265,23 @@ An independent final review reported no high-confidence findings.
 
 ## Remaining integration coverage
 
-The following coverage remains pending:
+The following environment-dependent coverage remains pending and may be
+outsourced after the deterministic gate:
 
-- live real-network stress and controlled dual-stack black-hole integration;
-  and
-- a specific unit test for the interface-binding failure path.
+- a dual A+AAAA hostname with both families healthy;
+- an IPv6-preferred result where IPv6 is black-holed and IPv4 succeeds;
+- an IPv4-preferred result where IPv4 is black-holed and IPv6 succeeds;
+- forced IPv4-first and IPv6-first resolver ordering;
+- several same-family addresses before and after the alternate-family address;
+- many DNS addresses to exercise multiple paced active sockets;
+- NAT64/DNS64;
+- a live curl-backed fallback case; and
+- repeated connection/cancellation stress with descriptor and memory
+  monitoring.
+
+Each live case must record resolved order, attempt start times, winning family,
+elapsed connection time, callback count/result, descriptor cleanup, and the
+equivalent feature-OFF control result.
 
 This is not a claim of full project completion or complete RFC 8305 support.
-Carbon wiring, the broader integration matrix, and broader documentation remain
-pending.
+The broader integration matrix and rollout documentation remain pending.
