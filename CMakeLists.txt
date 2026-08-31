@@ -9,7 +9,6 @@ cmake_policy(SET CMP0063 NEW)
 if (TARGET aziotsharedutil)
     RETURN()
 endif()
-
 project(azure_c_shared_utility)
 
 FILE(READ ${CMAKE_CURRENT_LIST_DIR}/version.txt C_SHARED_VERSION)
@@ -31,7 +30,6 @@ option(use_builtin_httpapi "set use_builtin_httpapi to ON to use the built-in ht
 option(use_cppunittest "set use_cppunittest to ON to build CppUnitTest tests on Windows (default is ON)" ON)
 option(suppress_header_searches "do not try to find headers - used when compiler check will fail" OFF)
 option(use_custom_heap "use externally defined heap functions instead of the malloc family" OFF)
-option(enable_dual_stack_connection_racing "enable staggered IPv6/IPv4 connection racing (default is OFF)" OFF)
 
 if(${use_custom_heap})
     add_definitions(-DGB_USE_CUSTOM_HEAP)
@@ -84,16 +82,6 @@ if(${exclude_aziotsharedutil_networking})
     option(use_wolfssl "set use_wolfssl to ON if wolfssl is to be used, set to OFF to not use wolfssl" OFF)
     option(use_socketio "set use_socketio to ON if socketio is to be included in the library, set to OFF if a different implementation will be provided" OFF)
     option(use_httpapi_compact "set use_httpapi_compact to ON if httpapi compact implementation is to be included in the library, set to OFF if a different implementation will be provided" OFF)
-endif()
-
-if(${enable_dual_stack_connection_racing})
-    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR TIZENRT)
-        message(FATAL_ERROR "Dual-stack connection racing is currently supported only on Linux")
-    elseif(exclude_aziotsharedutil_networking OR (NOT use_socketio AND (NOT use_http OR use_builtin_httpapi)))
-        message(FATAL_ERROR "Dual-stack connection racing requires at least one supported path: Berkeley socket I/O (-Duse_socketio=ON) or curl HTTPAPI (-Duse_http=ON -Duse_builtin_httpapi=OFF)")
-    endif()
-
-    add_definitions(-DDUAL_STACK_CONNECTION_RACING_ENABLED)
 endif()
 
 if(${use_etw}) 
@@ -423,116 +411,25 @@ if(${use_http})
         endif()
     else()
         if (NOT use_builtin_httpapi)
-            if(enable_dual_stack_connection_racing)
-                include(FindPackageHandleStandardArgs)
-
-                if((NOT CURL_INCLUDE_DIR OR CURL_INCLUDE_DIR MATCHES "-NOTFOUND$") AND CURL_INCLUDE_DIRS)
-                    list(GET CURL_INCLUDE_DIRS 0 CURL_INCLUDE_DIR)
-                endif()
-                if((NOT CURL_LIBRARY OR CURL_LIBRARY MATCHES "-NOTFOUND$") AND CURL_LIBRARIES)
-                    list(GET CURL_LIBRARIES 0 CURL_LIBRARY)
-                endif()
-
-                if(CMAKE_CROSSCOMPILING)
-                    # Direct lookup preserves the toolchain's CMAKE_FIND_ROOT_PATH behavior
-                    # and avoids FindCURL implementations that probe host pkg-config.
-                    message(STATUS "Cross compiling: locating target libcurl without pkg-config or FindCURL")
-                    find_path(CURL_INCLUDE_DIR NAMES curl/curl.h)
-                    find_library(CURL_LIBRARY NAMES curl)
-                    if(NOT CURL_INCLUDE_DIRS OR CURL_INCLUDE_DIRS MATCHES "-NOTFOUND$")
-                        set(CURL_INCLUDE_DIRS ${CURL_INCLUDE_DIR})
-                    endif()
-                    if(NOT CURL_LIBRARIES OR CURL_LIBRARIES MATCHES "-NOTFOUND$")
-                        set(CURL_LIBRARIES ${CURL_LIBRARY})
-                    endif()
-                elseif(NOT CURL_FOUND)
-                    # try pkg-config first
-                    find_package(PkgConfig)
-                    if(PKG_CONFIG_FOUND)
-                        pkg_check_modules(CURL libcurl>=7.59.0)
-                    endif()
-
-                    # if that didn't work, try CMake find_package
-                    if(NOT CURL_FOUND)
-                        find_package(CURL 7.59)
-                    endif()
-                endif()
-
-                if((NOT CURL_INCLUDE_DIR OR CURL_INCLUDE_DIR MATCHES "-NOTFOUND$") AND
-                    (NOT CURL_INCLUDE_DIRS OR CURL_INCLUDE_DIRS MATCHES "-NOTFOUND$"))
-                    find_path(CURL_INCLUDE_DIR NAMES curl/curl.h)
-                endif()
-                if((NOT CURL_LIBRARY OR CURL_LIBRARY MATCHES "-NOTFOUND$") AND
-                    (NOT CURL_LIBRARIES OR CURL_LIBRARIES MATCHES "-NOTFOUND$"))
-                    find_library(CURL_LIBRARY NAMES curl)
-                endif()
-                if((NOT CURL_INCLUDE_DIRS OR CURL_INCLUDE_DIRS MATCHES "-NOTFOUND$") AND CURL_INCLUDE_DIR)
-                    set(CURL_INCLUDE_DIRS ${CURL_INCLUDE_DIR})
-                endif()
-                if((NOT CURL_INCLUDE_DIR OR CURL_INCLUDE_DIR MATCHES "-NOTFOUND$") AND CURL_INCLUDE_DIRS)
-                    list(GET CURL_INCLUDE_DIRS 0 CURL_INCLUDE_DIR)
-                endif()
-                if((NOT CURL_LIBRARIES OR CURL_LIBRARIES MATCHES "-NOTFOUND$") AND CURL_LIBRARY)
-                    set(CURL_LIBRARIES ${CURL_LIBRARY})
-                endif()
-                if((NOT CURL_LIBRARY OR CURL_LIBRARY MATCHES "-NOTFOUND$") AND CURL_LIBRARIES)
-                    list(GET CURL_LIBRARIES 0 CURL_LIBRARY)
-                endif()
-
-                set(CURL_FIND_REQUIRED 1)
-                find_package_handle_standard_args(CURL DEFAULT_MSG CURL_LIBRARIES CURL_INCLUDE_DIRS)
-
-                set(_curl_version_header)
-                foreach(_curl_include_dir IN LISTS CURL_INCLUDE_DIRS)
-                    if(EXISTS "${_curl_include_dir}/curl/curlver.h")
-                        set(_curl_version_header "${_curl_include_dir}/curl/curlver.h")
-                        break()
-                    elseif(EXISTS "${_curl_include_dir}/curlver.h")
-                        set(_curl_version_header "${_curl_include_dir}/curlver.h")
-                        break()
-                    endif()
-                endforeach()
-
-                if(NOT _curl_version_header)
-                    message(FATAL_ERROR "Dual-stack connection racing with curl HTTPAPI could not validate the selected target curl headers: curl/curlver.h was not found in CURL_INCLUDE_DIRS='${CURL_INCLUDE_DIRS}'")
-                endif()
-
-                file(STRINGS "${_curl_version_header}" _curl_version_line
-                    REGEX "^[ \t]*#[ \t]*define[ \t]+LIBCURL_VERSION[ \t]+\"[0-9]+\\.[0-9]+\\.[0-9]+[^\"]*\""
-                    LIMIT_COUNT 1)
-                if(NOT _curl_version_line)
-                    message(FATAL_ERROR "Dual-stack connection racing with curl HTTPAPI could not parse LIBCURL_VERSION from selected target header '${_curl_version_header}'")
-                endif()
-                string(REGEX REPLACE ".*\"([0-9]+\\.[0-9]+\\.[0-9]+)[^\"]*\".*" "\\1"
-                    _curl_header_version "${_curl_version_line}")
-                if(_curl_header_version VERSION_LESS "7.59.0")
-                    message(FATAL_ERROR "Dual-stack connection racing with curl HTTPAPI requires target libcurl headers >= 7.59.0; selected '${_curl_version_header}' reports ${_curl_header_version}")
-                endif()
-
-                unset(_curl_header_version)
-                unset(_curl_version_header)
-                unset(_curl_version_line)
+            if (CMAKE_CROSSCOMPILING)
+                # As mentioned at https://cmake.org/Wiki/CMake_Cross_Compiling the
+                # pkg-config tool can not be used by cmake while cross compiling.
+                message(STATUS "Cross compiling not using pkg-config")
             else()
-                if (CMAKE_CROSSCOMPILING)
-                    # As mentioned at https://cmake.org/Wiki/CMake_Cross_Compiling the
-                    # pkg-config tool can not be used by cmake while cross compiling.
-                    message(STATUS "Cross compiling not using pkg-config")
-                else()
-                    # try pkg-config first
-                    find_package(PkgConfig)
-                    if(PKG_CONFIG_FOUND)
-                        pkg_check_modules(CURL libcurl)
-                    endif()
+                # try pkg-config first
+                find_package(PkgConfig)
+                if(PKG_CONFIG_FOUND)
+                    pkg_check_modules(CURL libcurl)
                 endif()
-
-                # if that didn't work, try CMake find_package
-                if(NOT CURL_FOUND)
-                    find_package(CURL)
-                endif()
-
-                set(CURL_FIND_REQUIRED 1)
-                find_package_handle_standard_args(CURL DEFAULT_MSG CURL_LIBRARIES)
             endif()
+
+            # if that didn't work, try CMake find_package
+            if(NOT CURL_FOUND)
+                find_package(CURL)
+            endif()
+
+            set(CURL_FIND_REQUIRED 1)
+            find_package_handle_standard_args(CURL DEFAULT_MSG CURL_LIBRARIES)
 
             include_directories(${CURL_INCLUDE_DIRS})
             set(aziotsharedutil_target_libs ${aziotsharedutil_target_libs} ${CURL_LIBRARIES})
@@ -602,15 +499,6 @@ endif()
 target_link_libraries(aziotsharedutil ${aziotsharedutil_target_libs})
 if(${build_as_dynamic})
     target_link_libraries(aziotsharedutil_dll ${aziotsharedutil_target_libs})
-endif()
-
-if(${enable_dual_stack_connection_racing})
-    if(use_socketio)
-        add_subdirectory(tests/socketio_berkeley_async_open_ut)
-    endif()
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND use_http AND NOT use_builtin_httpapi)
-        add_subdirectory(tests/httpapi_curl_dual_stack_ut)
-    endif()
 endif()
 
 if (${run_unittests} OR ${run_e2e_tests})

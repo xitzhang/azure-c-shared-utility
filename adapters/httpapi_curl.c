@@ -26,39 +26,6 @@
 
 #define TEMP_BUFFER_SIZE 1024
 
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-#define HTTPAPI_CURL_MINIMUM_VERSION_NUM 0x073B00U
-#define HTTPAPI_CURL_HAPPY_EYEBALLS_TIMEOUT_MS 250L
-
-#ifndef HTTPAPI_CURL_GLOBAL_INIT
-#define HTTPAPI_CURL_GLOBAL_INIT curl_global_init
-#endif
-#ifndef HTTPAPI_CURL_VERSION_INFO
-#define HTTPAPI_CURL_VERSION_INFO curl_version_info
-#endif
-#ifndef HTTPAPI_CURL_GLOBAL_CLEANUP
-#define HTTPAPI_CURL_GLOBAL_CLEANUP curl_global_cleanup
-#endif
-#ifndef HTTPAPI_CURL_EASY_INIT
-#define HTTPAPI_CURL_EASY_INIT curl_easy_init
-#endif
-#ifndef HTTPAPI_CURL_EASY_SETOPT
-#define HTTPAPI_CURL_EASY_SETOPT curl_easy_setopt
-#endif
-#ifndef HTTPAPI_CURL_EASY_STRERROR
-#define HTTPAPI_CURL_EASY_STRERROR curl_easy_strerror
-#endif
-#ifndef HTTPAPI_CURL_EASY_CLEANUP
-#define HTTPAPI_CURL_EASY_CLEANUP curl_easy_cleanup
-#endif
-#ifndef HTTPAPI_CURL_MALLOC
-#define HTTPAPI_CURL_MALLOC malloc
-#endif
-#ifndef HTTPAPI_CURL_FREE
-#define HTTPAPI_CURL_FREE free
-#endif
-#endif
-
 DEFINE_ENUM_STRINGS(HTTPAPI_RESULT, HTTPAPI_RESULT_VALUES);
 
 typedef struct HTTP_HANDLE_DATA_TAG
@@ -90,47 +57,15 @@ HTTPAPI_RESULT HTTPAPI_Init(void)
     HTTPAPI_RESULT result;
     if (nUsersOfHTTPAPI == 0)
     {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        if (HTTPAPI_CURL_GLOBAL_INIT(CURL_GLOBAL_NOTHING) != CURLE_OK)
-#else
         if (curl_global_init(CURL_GLOBAL_NOTHING) != 0)
-#endif
         {
             result = HTTPAPI_INIT_FAILED;
             LogError("(result = %s)", ENUM_TO_STRING(HTTPAPI_RESULT, result));
         }
         else
         {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-            const curl_version_info_data* curl_info = HTTPAPI_CURL_VERSION_INFO(CURLVERSION_NOW);
-            if (curl_info == NULL)
-            {
-                LogError("curl_version_info returned NULL; dual-stack connection racing requires libcurl >= 7.59.0 with IPv6 support");
-                HTTPAPI_CURL_GLOBAL_CLEANUP();
-                result = HTTPAPI_INIT_FAILED;
-            }
-            else if (curl_info->version_num < HTTPAPI_CURL_MINIMUM_VERSION_NUM)
-            {
-                LogError("Runtime libcurl version 0x%06X is older than required version 0x%06X (7.59.0)",
-                    curl_info->version_num, HTTPAPI_CURL_MINIMUM_VERSION_NUM);
-                HTTPAPI_CURL_GLOBAL_CLEANUP();
-                result = HTTPAPI_INIT_FAILED;
-            }
-            else if ((curl_info->features & CURL_VERSION_IPV6) == 0)
-            {
-                LogError("Runtime libcurl does not report CURL_VERSION_IPV6; dual-stack connection racing is unavailable");
-                HTTPAPI_CURL_GLOBAL_CLEANUP();
-                result = HTTPAPI_INIT_FAILED;
-            }
-            else
-            {
-                nUsersOfHTTPAPI++;
-                result = HTTPAPI_OK;
-            }
-#else
             nUsersOfHTTPAPI++;
             result = HTTPAPI_OK;
-#endif
         }
     }
     else
@@ -149,11 +84,7 @@ void HTTPAPI_Deinit(void)
         nUsersOfHTTPAPI--;
         if (nUsersOfHTTPAPI == 0)
         {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-            HTTPAPI_CURL_GLOBAL_CLEANUP();
-#else
             curl_global_cleanup();
-#endif
         }
     }
 }
@@ -169,11 +100,7 @@ HTTP_HANDLE HTTPAPI_CreateConnection(const char* hostName)
     }
     else
     {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        httpHandleData = (HTTP_HANDLE_DATA*)HTTPAPI_CURL_MALLOC(sizeof(HTTP_HANDLE_DATA));
-#else
         httpHandleData = (HTTP_HANDLE_DATA*)malloc(sizeof(HTTP_HANDLE_DATA));
-#endif
         if (httpHandleData != NULL)
         {
             size_t hostURL_size = safe_add_size_t(strlen("https://"), strlen(hostName));
@@ -186,21 +113,13 @@ HTTP_HANDLE HTTPAPI_CreateConnection(const char* hostName)
             }
             else
             {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                httpHandleData->hostURL = HTTPAPI_CURL_MALLOC(hostURL_size);
-#else
                 httpHandleData->hostURL = malloc(hostURL_size);
-#endif
             }
 
             if (httpHandleData->hostURL == NULL)
             {
                 LogError("unable to malloc");
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                HTTPAPI_CURL_FREE(httpHandleData);
-#else
                 free(httpHandleData);
-#endif
                 httpHandleData = NULL;
             }
             else
@@ -208,41 +127,15 @@ HTTP_HANDLE HTTPAPI_CreateConnection(const char* hostName)
                 if ((strcpy_s(httpHandleData->hostURL, hostURL_size, "https://") == 0) &&
                     (strcat_s(httpHandleData->hostURL, hostURL_size, hostName) == 0))
                 {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                    httpHandleData->curl = HTTPAPI_CURL_EASY_INIT();
-#else
                     httpHandleData->curl = curl_easy_init();
-#endif
                     if (httpHandleData->curl == NULL)
                     {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                        HTTPAPI_CURL_FREE(httpHandleData->hostURL);
-                        HTTPAPI_CURL_FREE(httpHandleData);
-#else
                         free(httpHandleData->hostURL);
                         free(httpHandleData);
-#endif
                         httpHandleData = NULL;
                     }
                     else
                     {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                        CURLcode setopt_result = HTTPAPI_CURL_EASY_SETOPT(
-                            httpHandleData->curl,
-                            CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS,
-                            HTTPAPI_CURL_HAPPY_EYEBALLS_TIMEOUT_MS);
-                        if (setopt_result != CURLE_OK)
-                        {
-                            LogError("failed to set CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS: %s",
-                                HTTPAPI_CURL_EASY_STRERROR(setopt_result));
-                            HTTPAPI_CURL_EASY_CLEANUP(httpHandleData->curl);
-                            HTTPAPI_CURL_FREE(httpHandleData->hostURL);
-                            HTTPAPI_CURL_FREE(httpHandleData);
-                            httpHandleData = NULL;
-                        }
-                        else
-                        {
-#endif
                         httpHandleData->timeout = 242 * 1000; /*242 seconds seems like a nice enough time. Reasone for 242:
                                                                 1. http://curl.haxx.se/libcurl/c/CURLOPT_TIMEOUT.html says Normally, name lookups can take a considerable time and limiting operations to less than a few minutes risk aborting perfectly normal operations.
                                                                 2. 256KB of data... at 9600 bps transfers in about 218 seconds. Add to that a buffer of 10%... round it up to 242 :)*/
@@ -254,20 +147,12 @@ HTTP_HANDLE HTTPAPI_CreateConnection(const char* hostName)
                         httpHandleData->x509certificate = NULL;
                         httpHandleData->x509privatekey = NULL;
                         httpHandleData->certificates = NULL;
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                        }
-#endif
                     }
                 }
                 else
                 {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                    HTTPAPI_CURL_FREE(httpHandleData->hostURL);
-                    HTTPAPI_CURL_FREE(httpHandleData);
-#else
                     free(httpHandleData->hostURL);
                     free(httpHandleData);
-#endif
                     httpHandleData = NULL;
                 }
             }
@@ -282,15 +167,9 @@ void HTTPAPI_CloseConnection(HTTP_HANDLE handle)
     HTTP_HANDLE_DATA* httpHandleData = (HTTP_HANDLE_DATA*)handle;
     if (httpHandleData != NULL)
     {
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        HTTPAPI_CURL_FREE(httpHandleData->hostURL);
-        HTTPAPI_CURL_EASY_CLEANUP(httpHandleData->curl);
-        HTTPAPI_CURL_FREE(httpHandleData);
-#else
         free(httpHandleData->hostURL);
         curl_easy_cleanup(httpHandleData->curl);
         free(httpHandleData);
-#endif
     }
 }
 

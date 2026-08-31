@@ -18,13 +18,9 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-#include <time.h>
-#endif
 #include "azure_c_shared_utility/socketio.h"
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -62,80 +58,6 @@
 #define CONNECT_TIMEOUT_SECONDS 10
 #define SOCKETIO_POLL_TIMEOUT_ERROR 110  /* ETIMEDOUT equivalent for poll timeout */
 
-#ifndef SOCKETIO_BERKELEY_GETADDRINFO
-#define SOCKETIO_BERKELEY_GETADDRINFO getaddrinfo
-#endif
-
-#ifndef SOCKETIO_BERKELEY_FREEADDRINFO
-#define SOCKETIO_BERKELEY_FREEADDRINFO freeaddrinfo
-#endif
-
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-#define CONNECTION_ATTEMPT_DELAY_MS 250
-
-#ifndef SOCKETIO_BERKELEY_SOCKET
-#define SOCKETIO_BERKELEY_SOCKET socket
-#endif
-
-#ifndef SOCKETIO_BERKELEY_CONNECT
-#define SOCKETIO_BERKELEY_CONNECT connect
-#endif
-
-#ifndef SOCKETIO_BERKELEY_CLOCK_GETTIME
-#define SOCKETIO_BERKELEY_CLOCK_GETTIME clock_gettime
-#endif
-
-#ifndef SOCKETIO_BERKELEY_POLL
-#define SOCKETIO_BERKELEY_POLL poll
-#endif
-
-#ifndef SOCKETIO_BERKELEY_GETSOCKOPT
-#define SOCKETIO_BERKELEY_GETSOCKOPT getsockopt
-#endif
-
-#ifndef SOCKETIO_BERKELEY_CLOSE
-#define SOCKETIO_BERKELEY_CLOSE close
-#endif
-
-#ifndef SOCKETIO_BERKELEY_FCNTL_GETFL
-#define SOCKETIO_BERKELEY_FCNTL_GETFL(socket) fcntl((socket), F_GETFL, 0)
-#endif
-
-#ifndef SOCKETIO_BERKELEY_FCNTL_SETFL
-#define SOCKETIO_BERKELEY_FCNTL_SETFL(socket, flags) fcntl((socket), F_SETFL, (flags))
-#endif
-
-#ifndef SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE
-#define SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE set_target_network_interface
-#endif
-
-#ifndef SOCKETIO_BERKELEY_RACE_MALLOC
-#define SOCKETIO_BERKELEY_RACE_MALLOC malloc
-#endif
-
-#ifndef SOCKETIO_BERKELEY_RACE_FREE
-#define SOCKETIO_BERKELEY_RACE_FREE free
-#endif
-
-typedef enum CONNECTION_ATTEMPT_STATE_TAG
-{
-    CONNECTION_ATTEMPT_NOT_STARTED,
-    CONNECTION_ATTEMPT_CONNECTING,
-    CONNECTION_ATTEMPT_SUCCEEDED
-} CONNECTION_ATTEMPT_STATE;
-
-typedef struct CONNECTION_ATTEMPT_TAG
-{
-    /* The attempt owns this descriptor until a winner transfers it to SOCKET_IO_INSTANCE. */
-    int socket;
-    const struct addrinfo* address;
-    CONNECTION_ATTEMPT_STATE state;
-    uint64_t started_at_ms;
-    size_t candidate_index;
-} CONNECTION_ATTEMPT;
-
-#endif
-
 typedef enum IO_STATE_TAG
 {
     IO_STATE_CLOSED,
@@ -167,21 +89,6 @@ typedef struct SOCKET_IO_INSTANCE_TAG
     IO_STATE io_state;
     SINGLYLINKEDLIST_HANDLE pending_io_list;
     unsigned char recv_bytes[RECEIVE_BYTES_VALUE];
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-    struct addrinfo* address_list;
-    const struct addrinfo** candidates;
-    size_t candidate_count;
-    size_t next_candidate_index;
-    CONNECTION_ATTEMPT* attempts;
-    struct pollfd* poll_descriptors;
-    size_t* polled_attempt_indices;
-    size_t active_attempt_count;
-    uint64_t overall_deadline_ms;
-    uint64_t next_attempt_at_ms;
-    ON_IO_OPEN_COMPLETE on_io_open_complete;
-    void* on_io_open_complete_context;
-    int last_connect_error;
-#endif
 } SOCKET_IO_INSTANCE;
 
 typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
@@ -191,230 +98,6 @@ typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
     char* ip_address;
     struct NETWORK_INTERFACE_DESCRIPTION_TAG* next;
 } NETWORK_INTERFACE_DESCRIPTION;
-
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-static void initialize_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
-{
-    socket_io_instance->address_list = NULL;
-    socket_io_instance->candidates = NULL;
-    socket_io_instance->candidate_count = 0;
-    socket_io_instance->next_candidate_index = 0;
-    socket_io_instance->attempts = NULL;
-    socket_io_instance->poll_descriptors = NULL;
-    socket_io_instance->polled_attempt_indices = NULL;
-    socket_io_instance->active_attempt_count = 0;
-    socket_io_instance->overall_deadline_ms = 0;
-    socket_io_instance->next_attempt_at_ms = 0;
-    socket_io_instance->on_io_open_complete = NULL;
-    socket_io_instance->on_io_open_complete_context = NULL;
-    socket_io_instance->last_connect_error = __FAILURE__;
-}
-
-static int get_monotonic_time_ms(uint64_t* current_time_ms, int* error_code)
-{
-    int result;
-    struct timespec current_time;
-
-    if (SOCKETIO_BERKELEY_CLOCK_GETTIME(CLOCK_MONOTONIC, &current_time) != 0)
-    {
-        *error_code = errno;
-        LogError("Failure: clock_gettime(CLOCK_MONOTONIC) failed with error %d (%s).",
-            *error_code, strerror(*error_code));
-        result = __FAILURE__;
-    }
-    else if ((current_time.tv_sec < 0) ||
-        ((uint64_t)current_time.tv_sec > ((UINT64_MAX - (uint64_t)(current_time.tv_nsec / 1000000)) / 1000)))
-    {
-        *error_code = EOVERFLOW;
-        LogError("Failure: CLOCK_MONOTONIC value cannot be represented in milliseconds.");
-        result = __FAILURE__;
-    }
-    else
-    {
-        *current_time_ms = ((uint64_t)current_time.tv_sec * 1000) +
-            (uint64_t)(current_time.tv_nsec / 1000000);
-        *error_code = 0;
-        result = 0;
-    }
-
-    return result;
-}
-
-static void dispose_connection_race(SOCKET_IO_INSTANCE* socket_io_instance)
-{
-    size_t attempt_index;
-
-    for (attempt_index = 0;
-        (socket_io_instance->attempts != NULL) && (attempt_index < socket_io_instance->candidate_count);
-        attempt_index++)
-    {
-        if (socket_io_instance->attempts[attempt_index].socket != INVALID_SOCKET)
-        {
-            SOCKETIO_BERKELEY_CLOSE(socket_io_instance->attempts[attempt_index].socket);
-            socket_io_instance->attempts[attempt_index].socket = INVALID_SOCKET;
-        }
-    }
-
-    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->polled_attempt_indices);
-    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->poll_descriptors);
-    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->attempts);
-    SOCKETIO_BERKELEY_RACE_FREE(socket_io_instance->candidates);
-    if (socket_io_instance->address_list != NULL)
-    {
-        SOCKETIO_BERKELEY_FREEADDRINFO(socket_io_instance->address_list);
-    }
-
-    initialize_connection_race(socket_io_instance);
-}
-
-static const struct addrinfo* take_next_candidate(struct addrinfo** cursor, int family)
-{
-    const struct addrinfo* result = NULL;
-
-    while (*cursor != NULL)
-    {
-        struct addrinfo* current = *cursor;
-        *cursor = current->ai_next;
-
-        if ((current->ai_family == family) && (current->ai_addr != NULL))
-        {
-            result = current;
-            break;
-        }
-    }
-
-    return result;
-}
-
-static int allocate_connection_race_arrays(SOCKET_IO_INSTANCE* socket_io_instance, size_t candidate_count)
-{
-    int result;
-    size_t candidate_allocation_size;
-    size_t attempt_allocation_size;
-    size_t poll_allocation_size;
-    size_t poll_index_allocation_size;
-    nfds_t poll_capacity = (nfds_t)candidate_count;
-    const struct addrinfo** candidates = NULL;
-    CONNECTION_ATTEMPT* attempts = NULL;
-    struct pollfd* poll_descriptors = NULL;
-    size_t* polled_attempt_indices = NULL;
-    size_t candidate_index;
-
-    candidate_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*candidates));
-    attempt_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*attempts));
-    poll_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*poll_descriptors));
-    poll_index_allocation_size = safe_multiply_size_t(candidate_count, sizeof(*polled_attempt_indices));
-
-    if ((candidate_count == 0) ||
-        ((size_t)poll_capacity != candidate_count) ||
-        (candidate_allocation_size == SIZE_MAX) ||
-        (attempt_allocation_size == SIZE_MAX) ||
-        (poll_allocation_size == SIZE_MAX) ||
-        (poll_index_allocation_size == SIZE_MAX))
-    {
-        LogError("Failure: connection race candidate count cannot be represented safely.");
-        socket_io_instance->last_connect_error = EOVERFLOW;
-        result = __FAILURE__;
-    }
-    else if (((candidates = SOCKETIO_BERKELEY_RACE_MALLOC(candidate_allocation_size)) == NULL) ||
-        ((attempts = SOCKETIO_BERKELEY_RACE_MALLOC(attempt_allocation_size)) == NULL) ||
-        ((poll_descriptors = SOCKETIO_BERKELEY_RACE_MALLOC(poll_allocation_size)) == NULL) ||
-        ((polled_attempt_indices = SOCKETIO_BERKELEY_RACE_MALLOC(poll_index_allocation_size)) == NULL))
-    {
-        LogError("Failure: unable to allocate connection race state for %zu candidates.", candidate_count);
-        SOCKETIO_BERKELEY_RACE_FREE(polled_attempt_indices);
-        SOCKETIO_BERKELEY_RACE_FREE(poll_descriptors);
-        SOCKETIO_BERKELEY_RACE_FREE(attempts);
-        SOCKETIO_BERKELEY_RACE_FREE(candidates);
-        socket_io_instance->last_connect_error = ENOMEM;
-        result = __FAILURE__;
-    }
-    else
-    {
-        for (candidate_index = 0; candidate_index < candidate_count; candidate_index++)
-        {
-            attempts[candidate_index].socket = INVALID_SOCKET;
-            attempts[candidate_index].address = NULL;
-            attempts[candidate_index].state = CONNECTION_ATTEMPT_NOT_STARTED;
-            attempts[candidate_index].started_at_ms = 0;
-            attempts[candidate_index].candidate_index = candidate_index;
-        }
-
-        socket_io_instance->candidates = candidates;
-        socket_io_instance->attempts = attempts;
-        socket_io_instance->poll_descriptors = poll_descriptors;
-        socket_io_instance->polled_attempt_indices = polled_attempt_indices;
-        socket_io_instance->candidate_count = candidate_count;
-        result = 0;
-    }
-
-    return result;
-}
-
-static int prepare_connection_candidates(SOCKET_IO_INSTANCE* socket_io_instance, struct addrinfo* address_list)
-{
-    int result;
-    int preferred_family = AF_UNSPEC;
-    size_t candidate_count = 0;
-    size_t candidate_index;
-    struct addrinfo* address;
-    struct addrinfo* ipv4_cursor = address_list;
-    struct addrinfo* ipv6_cursor = address_list;
-
-    for (address = address_list; address != NULL; address = address->ai_next)
-    {
-        if (((address->ai_family == AF_INET) || (address->ai_family == AF_INET6)) &&
-            (address->ai_addr != NULL))
-        {
-            if (preferred_family == AF_UNSPEC)
-            {
-                preferred_family = address->ai_family;
-            }
-            candidate_count++;
-        }
-    }
-
-    if (candidate_count == 0)
-    {
-        LogError("Failure: DNS resolution returned no usable IPv4 or IPv6 addresses.");
-        socket_io_instance->last_connect_error = EADDRNOTAVAIL;
-        result = __FAILURE__;
-    }
-    else if (allocate_connection_race_arrays(socket_io_instance, candidate_count) != 0)
-    {
-        result = __FAILURE__;
-    }
-    else
-    {
-        int next_family = preferred_family;
-
-        socket_io_instance->address_list = address_list;
-
-        for (candidate_index = 0; candidate_index < candidate_count; candidate_index++)
-        {
-            const struct addrinfo* candidate;
-            struct addrinfo** cursor = (next_family == AF_INET6) ? &ipv6_cursor : &ipv4_cursor;
-
-            candidate = take_next_candidate(cursor, next_family);
-            if (candidate == NULL)
-            {
-                next_family = (next_family == AF_INET6) ? AF_INET : AF_INET6;
-                cursor = (next_family == AF_INET6) ? &ipv6_cursor : &ipv4_cursor;
-                candidate = take_next_candidate(cursor, next_family);
-            }
-
-            socket_io_instance->candidates[candidate_index] = candidate;
-            next_family = (candidate->ai_family == AF_INET6) ? AF_INET : AF_INET6;
-        }
-
-        LogInfo("Prepared %zu connection candidates; preserving the operating system's %s preference.",
-            candidate_count, (preferred_family == AF_INET6) ? "IPv6" : "IPv4");
-        result = 0;
-    }
-
-    return result;
-}
-#endif
 
 /*this function will clone an option given by name and value*/
 static void* socketio_CloneOption(const char* name, const void* value)
@@ -817,352 +500,6 @@ static int set_target_network_interface(int target_socket, char* mac_address)
 }
 #endif //__APPLE__
 
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-static void reset_connection_attempt(CONNECTION_ATTEMPT* attempt)
-{
-    attempt->socket = INVALID_SOCKET;
-    attempt->address = NULL;
-    attempt->state = CONNECTION_ATTEMPT_NOT_STARTED;
-    attempt->started_at_ms = 0;
-    attempt->candidate_index = SIZE_MAX;
-}
-
-static void fail_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, CONNECTION_ATTEMPT* attempt, int error_code)
-{
-    if (attempt->socket != INVALID_SOCKET)
-    {
-        SOCKETIO_BERKELEY_CLOSE(attempt->socket);
-        socket_io_instance->active_attempt_count--;
-    }
-
-    socket_io_instance->last_connect_error = error_code;
-    reset_connection_attempt(attempt);
-}
-
-static int start_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms)
-{
-    int result;
-    size_t attempt_index;
-    CONNECTION_ATTEMPT* attempt = NULL;
-    const struct addrinfo* address;
-    int flags;
-    int connect_result;
-    char resolved_ip[INET6_ADDRSTRLEN] = { 0 };
-    const void* resolved_address = NULL;
-
-    for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
-    {
-        if (socket_io_instance->attempts[attempt_index].state == CONNECTION_ATTEMPT_NOT_STARTED)
-        {
-            attempt = &socket_io_instance->attempts[attempt_index];
-            break;
-        }
-    }
-
-    if ((attempt == NULL) || (socket_io_instance->next_candidate_index >= socket_io_instance->candidate_count))
-    {
-        socket_io_instance->last_connect_error = __FAILURE__;
-        LogError("Failure: no connection attempt slot or candidate is available.");
-        result = __FAILURE__;
-    }
-    else
-    {
-        attempt->candidate_index = socket_io_instance->next_candidate_index;
-        address = socket_io_instance->candidates[socket_io_instance->next_candidate_index++];
-        attempt->address = address;
-        attempt->started_at_ms = current_time_ms;
-        socket_io_instance->next_attempt_at_ms =
-            (current_time_ms > (UINT64_MAX - CONNECTION_ATTEMPT_DELAY_MS)) ?
-            UINT64_MAX : current_time_ms + CONNECTION_ATTEMPT_DELAY_MS;
-        attempt->socket = SOCKETIO_BERKELEY_SOCKET(address->ai_family, address->ai_socktype, address->ai_protocol);
-
-        if (attempt->socket < SOCKET_SUCCESS)
-        {
-            int socket_error = (errno != 0) ? errno : EIO;
-            LogError("Failure: socket create failure %d (%s).", socket_error, strerror(socket_error));
-            fail_connection_attempt(socket_io_instance, attempt, socket_error);
-            result = __FAILURE__;
-        }
-        else
-        {
-            socket_io_instance->active_attempt_count++;
-#ifndef __APPLE__
-            errno = 0;
-            if ((socket_io_instance->target_mac_address != NULL) &&
-                (SOCKETIO_BERKELEY_SET_TARGET_NETWORK_INTERFACE(
-                    attempt->socket, socket_io_instance->target_mac_address) != 0))
-            {
-                int interface_error = (errno != 0) ? errno : ENODEV;
-                LogError("Failure: failed selecting target network interface (MACADDR=%s).",
-                    socket_io_instance->target_mac_address);
-                fail_connection_attempt(socket_io_instance, attempt, interface_error);
-                result = __FAILURE__;
-            }
-            else
-#endif //__APPLE__
-            if (((flags = SOCKETIO_BERKELEY_FCNTL_GETFL(attempt->socket)) == -1) ||
-                (SOCKETIO_BERKELEY_FCNTL_SETFL(attempt->socket, flags | O_NONBLOCK) == -1))
-            {
-                int fcntl_error = (errno != 0) ? errno : EIO;
-                LogError("Failure: fcntl failure %d (%s).", fcntl_error, strerror(fcntl_error));
-                fail_connection_attempt(socket_io_instance, attempt, fcntl_error);
-                result = __FAILURE__;
-            }
-            else
-            {
-                if (address->ai_family == AF_INET)
-                {
-                    resolved_address = &((const struct sockaddr_in*)address->ai_addr)->sin_addr;
-                }
-                else if (address->ai_family == AF_INET6)
-                {
-                    resolved_address = &((const struct sockaddr_in6*)address->ai_addr)->sin6_addr;
-                }
-
-                if ((resolved_address != NULL) &&
-                    (inet_ntop(address->ai_family, resolved_address, resolved_ip, sizeof(resolved_ip)) != NULL))
-                {
-                    LogInfo("DNS resolved %s to %s, connecting to %s:%d (socket fd=%d)",
-                        socket_io_instance->hostname, resolved_ip, socket_io_instance->hostname,
-                        socket_io_instance->port, attempt->socket);
-                }
-                else
-                {
-                    LogInfo("DNS resolved successfully, connecting to %s:%d (socket fd=%d)",
-                        socket_io_instance->hostname, socket_io_instance->port, attempt->socket);
-                }
-
-                connect_result = SOCKETIO_BERKELEY_CONNECT(attempt->socket, address->ai_addr, address->ai_addrlen);
-                if (connect_result == 0)
-                {
-                    attempt->state = CONNECTION_ATTEMPT_SUCCEEDED;
-                    result = 0;
-                }
-                else if (errno == EINPROGRESS)
-                {
-                    attempt->state = CONNECTION_ATTEMPT_CONNECTING;
-                    LogInfo("Connect in progress for %s:%d (socket fd=%d).",
-                        socket_io_instance->hostname, socket_io_instance->port, attempt->socket);
-                    result = 0;
-                }
-                else
-                {
-                    int connect_error = errno;
-                    LogError("Failure: connect to %s:%d failed with error %d (%s).",
-                        socket_io_instance->hostname, socket_io_instance->port,
-                        connect_error, strerror(connect_error));
-                    fail_connection_attempt(socket_io_instance, attempt, connect_error);
-                    result = __FAILURE__;
-                }
-            }
-        }
-    }
-
-    return result;
-}
-
-static CONNECTION_ATTEMPT* find_successful_connection_attempt(SOCKET_IO_INSTANCE* socket_io_instance)
-{
-    size_t attempt_index;
-    CONNECTION_ATTEMPT* result = NULL;
-
-    for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
-    {
-        CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
-        if ((attempt->state == CONNECTION_ATTEMPT_SUCCEEDED) &&
-            ((result == NULL) || (attempt->candidate_index < result->candidate_index)))
-        {
-            result = attempt;
-        }
-    }
-
-    return result;
-}
-
-static void start_next_connection_attempt(
-    SOCKET_IO_INSTANCE* socket_io_instance, uint64_t current_time_ms, int is_first_attempt)
-{
-    if ((socket_io_instance->next_candidate_index < socket_io_instance->candidate_count) &&
-        ((is_first_attempt != 0) || (current_time_ms >= socket_io_instance->next_attempt_at_ms)))
-    {
-        (void)start_connection_attempt(socket_io_instance, current_time_ms);
-    }
-}
-
-static void complete_connection_open(SOCKET_IO_INSTANCE* socket_io_instance, CONNECTION_ATTEMPT* winning_attempt)
-{
-    ON_IO_OPEN_COMPLETE on_io_open_complete = socket_io_instance->on_io_open_complete;
-    void* on_io_open_complete_context = socket_io_instance->on_io_open_complete_context;
-    IO_OPEN_RESULT_DETAILED open_result_detailed = { IO_OPEN_OK, 0 };
-    int connected_socket = winning_attempt->socket;
-
-    winning_attempt->socket = INVALID_SOCKET;
-    socket_io_instance->active_attempt_count--;
-    socket_io_instance->socket = connected_socket;
-    socket_io_instance->on_io_open_complete = NULL;
-    socket_io_instance->on_io_open_complete_context = NULL;
-    dispose_connection_race(socket_io_instance);
-    socket_io_instance->io_state = IO_STATE_OPEN;
-
-    LogInfo("TCP connection to %s:%d established successfully (fd=%d).",
-        socket_io_instance->hostname, socket_io_instance->port, connected_socket);
-
-    if (on_io_open_complete != NULL)
-    {
-        on_io_open_complete(on_io_open_complete_context, open_result_detailed);
-    }
-}
-
-static void fail_connection_open(SOCKET_IO_INSTANCE* socket_io_instance, int error_code)
-{
-    ON_IO_OPEN_COMPLETE on_io_open_complete = socket_io_instance->on_io_open_complete;
-    void* on_io_open_complete_context = socket_io_instance->on_io_open_complete_context;
-    IO_OPEN_RESULT_DETAILED open_result_detailed = { IO_OPEN_ERROR, error_code };
-
-    socket_io_instance->on_io_open_complete = NULL;
-    socket_io_instance->on_io_open_complete_context = NULL;
-    dispose_connection_race(socket_io_instance);
-    socket_io_instance->on_bytes_received = NULL;
-    socket_io_instance->on_bytes_received_context = NULL;
-    socket_io_instance->on_io_error = NULL;
-    socket_io_instance->on_io_error_context = NULL;
-    socket_io_instance->io_state = IO_STATE_CLOSED;
-
-    if (on_io_open_complete != NULL)
-    {
-        on_io_open_complete(on_io_open_complete_context, open_result_detailed);
-    }
-}
-
-static int progress_connection_open(SOCKET_IO_INSTANCE* socket_io_instance)
-{
-    int result = 0;
-    int time_error;
-    uint64_t current_time_ms;
-    size_t attempt_index;
-    CONNECTION_ATTEMPT* winning_attempt;
-    nfds_t poll_descriptor_count = 0;
-
-    winning_attempt = find_successful_connection_attempt(socket_io_instance);
-    if (winning_attempt != NULL)
-    {
-        complete_connection_open(socket_io_instance, winning_attempt);
-        result = 1;
-    }
-    else if (get_monotonic_time_ms(&current_time_ms, &time_error) != 0)
-    {
-        fail_connection_open(socket_io_instance, time_error);
-        result = 1;
-    }
-    else if (current_time_ms >= socket_io_instance->overall_deadline_ms)
-    {
-        LogError("Failure: connection to %s:%d timed out.",
-            socket_io_instance->hostname, socket_io_instance->port);
-        fail_connection_open(socket_io_instance, ETIMEDOUT);
-        result = 1;
-    }
-    else
-    {
-        int poll_result = 0;
-
-        for (attempt_index = 0; attempt_index < socket_io_instance->candidate_count; attempt_index++)
-        {
-            CONNECTION_ATTEMPT* attempt = &socket_io_instance->attempts[attempt_index];
-            if (attempt->state == CONNECTION_ATTEMPT_CONNECTING)
-            {
-                socket_io_instance->poll_descriptors[poll_descriptor_count].fd = attempt->socket;
-                socket_io_instance->poll_descriptors[poll_descriptor_count].events = POLLOUT;
-                socket_io_instance->poll_descriptors[poll_descriptor_count].revents = 0;
-                socket_io_instance->polled_attempt_indices[poll_descriptor_count] = attempt_index;
-                poll_descriptor_count++;
-            }
-        }
-
-        if (poll_descriptor_count > 0)
-        {
-            poll_result = SOCKETIO_BERKELEY_POLL(
-                socket_io_instance->poll_descriptors, poll_descriptor_count, 0);
-        }
-
-        if ((poll_result < 0) && (errno != EINTR))
-        {
-            int poll_error = (errno != 0) ? errno : EIO;
-            LogError("Failure: poll failure %d (%s).", poll_error, strerror(poll_error));
-            fail_connection_open(socket_io_instance, poll_error);
-            result = 1;
-        }
-        else
-        {
-            for (attempt_index = 0; attempt_index < poll_descriptor_count; attempt_index++)
-            {
-                CONNECTION_ATTEMPT* attempt =
-                    &socket_io_instance->attempts[socket_io_instance->polled_attempt_indices[attempt_index]];
-
-                if (socket_io_instance->poll_descriptors[attempt_index].revents != 0)
-                {
-                    int socket_error = 0;
-                    socklen_t socket_error_length = sizeof(socket_error);
-
-                    if ((socket_io_instance->poll_descriptors[attempt_index].revents & POLLNVAL) != 0)
-                    {
-                        LogError("Failure: poll reported an invalid connection socket.");
-                        fail_connection_attempt(socket_io_instance, attempt, EBADF);
-                    }
-                    else if (SOCKETIO_BERKELEY_GETSOCKOPT(attempt->socket, SOL_SOCKET, SO_ERROR,
-                        &socket_error, &socket_error_length) != 0)
-                    {
-                        int getsockopt_error = (errno != 0) ? errno : EIO;
-                        LogError("Failure: getsockopt failure %d (%s).",
-                            getsockopt_error, strerror(getsockopt_error));
-                        fail_connection_attempt(socket_io_instance, attempt, getsockopt_error);
-                    }
-                    else if (socket_error != 0)
-                    {
-                        LogError("Failure: connect to %s:%d completed with error %d (%s).",
-                            socket_io_instance->hostname, socket_io_instance->port,
-                            socket_error, strerror(socket_error));
-                        fail_connection_attempt(socket_io_instance, attempt, socket_error);
-                    }
-                    else
-                    {
-                        attempt->state = CONNECTION_ATTEMPT_SUCCEEDED;
-                    }
-                }
-            }
-
-            winning_attempt = find_successful_connection_attempt(socket_io_instance);
-            if (winning_attempt != NULL)
-            {
-                complete_connection_open(socket_io_instance, winning_attempt);
-                result = 1;
-            }
-            else
-            {
-                start_next_connection_attempt(socket_io_instance, current_time_ms, 0);
-                winning_attempt = find_successful_connection_attempt(socket_io_instance);
-
-                if (winning_attempt != NULL)
-                {
-                    complete_connection_open(socket_io_instance, winning_attempt);
-                    result = 1;
-                }
-                else if ((socket_io_instance->active_attempt_count == 0) &&
-                    (socket_io_instance->next_candidate_index >= socket_io_instance->candidate_count))
-                {
-                    int connect_error = socket_io_instance->last_connect_error;
-                    LogError("Failure: all prepared addresses failed for %s:%d; last error was %d.",
-                        socket_io_instance->hostname, socket_io_instance->port, connect_error);
-                    fail_connection_open(socket_io_instance, connect_error);
-                    result = 1;
-                }
-            }
-        }
-    }
-
-    return result;
-}
-#endif
-
 CONCRETE_IO_HANDLE socketio_create(void* io_create_parameters)
 {
     SOCKETIO_CONFIG* socket_io_config = io_create_parameters;
@@ -1228,9 +565,6 @@ CONCRETE_IO_HANDLE socketio_create(void* io_create_parameters)
                     result->on_bytes_received_context = NULL;
                     result->on_io_error_context = NULL;
                     result->io_state = IO_STATE_CLOSED;
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                    initialize_connection_race(result);
-#endif
                 }
             }
         }
@@ -1254,10 +588,6 @@ void socketio_destroy(CONCRETE_IO_HANDLE socket_io)
             close(socket_io_instance->socket);
         }
 
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        dispose_connection_race(socket_io_instance);
-#endif
-
         /* clear allpending IOs */
         LIST_ITEM_HANDLE first_pending_io = singlylinkedlist_get_head_item(socket_io_instance->pending_io_list);
         while (first_pending_io != NULL)
@@ -1280,7 +610,6 @@ void socketio_destroy(CONCRETE_IO_HANDLE socket_io)
     }
 }
 
-#ifndef DUAL_STACK_CONNECTION_RACING_ENABLED
 static int connect_to_addrinfo(SOCKET_IO_INSTANCE* socket_io_instance, const struct addrinfo* address, int timeout_ms, int* error_code)
 {
     int result;
@@ -1436,14 +765,10 @@ static int connect_to_addrinfo(SOCKET_IO_INSTANCE* socket_io_instance, const str
 
     return result;
 }
-#endif
 
 int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_complete, void* on_io_open_complete_context, ON_BYTES_RECEIVED on_bytes_received, void* on_bytes_received_context, ON_IO_ERROR on_io_error, void* on_io_error_context)
 {
     int result;
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-    int open_pending = 0;
-#endif
 
     IO_OPEN_RESULT_DETAILED open_result_detailed = { IO_OPEN_OK, 0 };
 
@@ -1493,7 +818,7 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
 
                 sprintf(portString, "%u", socket_io_instance->port);
                 LogInfo("Starting DNS lookup for %s:%d", socket_io_instance->hostname, socket_io_instance->port);
-                int err = SOCKETIO_BERKELEY_GETADDRINFO(socket_io_instance->hostname, portString, &addrHint, &addrInfo);
+                int err = getaddrinfo(socket_io_instance->hostname, portString, &addrHint, &addrInfo);
                 if (err != 0)
                 {
                     LogError("Failure: getaddrinfo failure %d (%s) for host %s.", err, gai_strerror(err), socket_io_instance->hostname);
@@ -1502,58 +827,10 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                 }
                 else
                 {
-                    int connect_error = __FAILURE__;
-#ifndef DUAL_STACK_CONNECTION_RACING_ENABLED
                     size_t address_count = 0;
+                    int connect_error = __FAILURE__;
                     struct addrinfo* address;
-#endif
 
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                    if (prepare_connection_candidates(socket_io_instance, addrInfo) != 0)
-                    {
-                        connect_error = socket_io_instance->last_connect_error;
-                        if (addrInfo != NULL)
-                        {
-                            SOCKETIO_BERKELEY_FREEADDRINFO(addrInfo);
-                        }
-                        result = __FAILURE__;
-                    }
-                    else
-                    {
-                        uint64_t current_time_ms;
-                        int time_error;
-
-                        if (get_monotonic_time_ms(&current_time_ms, &time_error) != 0)
-                        {
-                            connect_error = time_error;
-                            dispose_connection_race(socket_io_instance);
-                            result = __FAILURE__;
-                        }
-                        else if (current_time_ms > (UINT64_MAX - (CONNECT_TIMEOUT_SECONDS * 1000)))
-                        {
-                            connect_error = EOVERFLOW;
-                            LogError("Failure: connection deadline cannot be represented.");
-                            dispose_connection_race(socket_io_instance);
-                            result = __FAILURE__;
-                        }
-                        else
-                        {
-                            socket_io_instance->overall_deadline_ms =
-                                current_time_ms + (CONNECT_TIMEOUT_SECONDS * 1000);
-                            socket_io_instance->on_io_open_complete = on_io_open_complete;
-                            socket_io_instance->on_io_open_complete_context = on_io_open_complete_context;
-                            socket_io_instance->on_bytes_received = on_bytes_received;
-                            socket_io_instance->on_bytes_received_context = on_bytes_received_context;
-                            socket_io_instance->on_io_error = on_io_error;
-                            socket_io_instance->on_io_error_context = on_io_error_context;
-                            socket_io_instance->io_state = IO_STATE_OPENING;
-
-                            start_next_connection_attempt(socket_io_instance, current_time_ms, 1);
-                            open_pending = 1;
-                            result = 0;
-                        }
-                    }
-#else
                     for (address = addrInfo; address != NULL; address = address->ai_next)
                     {
                         address_count++;
@@ -1572,7 +849,6 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                             break;
                         }
                     }
-                    freeaddrinfo(addrInfo);
 
                     if (result == 0)
                     {
@@ -1586,24 +862,12 @@ int socketio_open(CONCRETE_IO_HANDLE socket_io, ON_IO_OPEN_COMPLETE on_io_open_c
                     {
                         open_result_detailed.code = connect_error;
                     }
-#endif
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-                    if (result != 0)
-                    {
-                        open_result_detailed.code = connect_error;
-                    }
-#endif
+
+                    freeaddrinfo(addrInfo);
                 }
             }
         }
     }
-
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-    if (open_pending != 0)
-    {
-        return 0;
-    }
-#endif
 
     if (on_io_open_complete != NULL)
     {
@@ -1630,24 +894,6 @@ int socketio_close(CONCRETE_IO_HANDLE socket_io, ON_IO_CLOSE_COMPLETE on_io_clos
     else
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        dispose_connection_race(socket_io_instance);
-        if ((socket_io_instance->io_state != IO_STATE_CLOSED) && (socket_io_instance->io_state != IO_STATE_CLOSING))
-        {
-            if (socket_io_instance->socket != INVALID_SOCKET)
-            {
-                LogInfo("Closing socket (fd=%d)", socket_io_instance->socket);
-                (void)shutdown(socket_io_instance->socket, SHUT_RDWR);
-                close(socket_io_instance->socket);
-            }
-            socket_io_instance->socket = INVALID_SOCKET;
-            socket_io_instance->io_state = IO_STATE_CLOSED;
-        }
-        socket_io_instance->on_bytes_received = NULL;
-        socket_io_instance->on_bytes_received_context = NULL;
-        socket_io_instance->on_io_error = NULL;
-        socket_io_instance->on_io_error_context = NULL;
-#else
         if ((socket_io_instance->io_state != IO_STATE_CLOSED) && (socket_io_instance->io_state != IO_STATE_CLOSING))
         {
             // Only close if the socket isn't already in the closed or closing state
@@ -1657,7 +903,6 @@ int socketio_close(CONCRETE_IO_HANDLE socket_io, ON_IO_CLOSE_COMPLETE on_io_clos
             socket_io_instance->socket = INVALID_SOCKET;
             socket_io_instance->io_state = IO_STATE_CLOSED;
         }
-#endif
 
         if (on_io_close_complete != NULL)
         {
@@ -1758,13 +1003,6 @@ void socketio_dowork(CONCRETE_IO_HANDLE socket_io)
     if (socket_io != NULL)
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
-#ifdef DUAL_STACK_CONNECTION_RACING_ENABLED
-        if (socket_io_instance->io_state == IO_STATE_OPENING)
-        {
-            (void)progress_connection_open(socket_io_instance);
-            return;
-        }
-#endif
         LIST_ITEM_HANDLE first_pending_io = singlylinkedlist_get_head_item(socket_io_instance->pending_io_list);
         while (first_pending_io != NULL)
         {

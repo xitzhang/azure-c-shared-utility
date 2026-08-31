@@ -85,7 +85,6 @@ In order to turn on/off the tlsio implementations use the following CMAKE option
 * `-Duse_http:bool={ON/OFF}` - turns on/off the HTTP API support. 
 * `-Duse_installed_dependencies:bool={ON/OFF}` - turns on/off building azure-c-shared-utility using installed dependencies. This package may only be installed if this flag is ON.
 * `-Drun_unittests:bool={ON/OFF}` - enables building of unit tests. Default is OFF.
-* `-Denable_dual_stack_connection_racing:bool={ON/OFF}` - enables the Linux Berkeley socket connection-racing implementation. The option is OFF by default and uses a fixed 250 ms delay between IPv6/IPv4 connection attempts. Address preference remains controlled by the operating system.
 
 
 ## Porting to new devices
