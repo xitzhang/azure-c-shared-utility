@@ -2913,6 +2913,56 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_OK_prepares_and_sends_the_WebS
     uws_client_destroy(uws_client);
 }
 
+TEST_FUNCTION(on_underlying_io_open_complete_with_ipv6_host_brackets_the_Host_header)
+{
+    // arrange
+    IO_OPEN_RESULT_DETAILED open_result = { IO_OPEN_OK, 0 };
+    UWS_CLIENT_HANDLE uws_client;
+    size_t i;
+    unsigned char expected_nonce[16];
+    const char expected_request[] =
+        "GET /aaa HTTP/1.1\r\n"
+        "Host: [2001:db8::1]:444\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: ZWRuYW1vZGU6bm9jYXBlcyE=\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n";
+
+    uws_client = uws_client_create("2001:db8::1", 444, "/aaa", true, NULL, 0);
+    (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
+    umock_c_reset_all_calls();
+
+    for (i = 0; i < 16; i++)
+    {
+        EXPECTED_CALL(gb_rand()).SetReturn((int)i);
+        expected_nonce[i] = (unsigned char)i;
+    }
+
+    STRICT_EXPECTED_CALL(Base64_Encode_Bytes(IGNORED_PTR_ARG, 16))
+        .ValidateArgumentBuffer(1, expected_nonce, 16);
+    STRICT_EXPECTED_CALL(Map_GetInternals(IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG));
+    STRICT_EXPECTED_CALL(malloc(1));
+    STRICT_EXPECTED_CALL(STRING_c_str(BASE64_ENCODED_STRING)).SetReturn("ZWRuYW1vZGU6bm9jYXBlcyE=");
+    EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
+    STRICT_EXPECTED_CALL(xio_send(TEST_IO_HANDLE, IGNORED_PTR_ARG, sizeof(expected_request) - 1, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
+        .ValidateArgumentBuffer(2, expected_request, sizeof(expected_request) - 1)
+        .IgnoreArgument_on_send_complete()
+        .IgnoreArgument_callback_context();
+    EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
+    STRICT_EXPECTED_CALL(STRING_delete(BASE64_ENCODED_STRING));
+    EXPECTED_CALL(free(IGNORED_PTR_ARG));
+
+    // act
+    g_on_io_open_complete(g_on_io_open_complete_context, open_result);
+
+    // assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // cleanup
+    uws_client_destroy(uws_client);
+}
+
 /* Tests_SRS_UWS_CLIENT_01_498: [ If Base64 encoding the nonce for the upgrade request fails, then the uws client shall report that the open failed by calling the `on_ws_open_complete` callback passed to `uws_client_open_async` with `WS_OPEN_ERROR_BASE64_ENCODE_FAILED`. ]*/
 TEST_FUNCTION(when_base64_encode_fails_on_underlying_io_open_complete_triggers_the_error_WS_OPEN_ERROR_BASE64_ENCODE_FAILED)
 {

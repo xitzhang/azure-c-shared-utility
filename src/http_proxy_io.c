@@ -50,6 +50,13 @@ typedef struct HTTP_PROXY_IO_INSTANCE_TAG
     time_t last_open_wait_log_time;
 } HTTP_PROXY_IO_INSTANCE;
 
+static bool host_needs_ipv6_brackets(const char* hostname)
+{
+    size_t hostname_length = strlen(hostname);
+    return strchr(hostname, ':') != NULL &&
+        !(hostname_length >= 2 && hostname[0] == '[' && hostname[hostname_length - 1] == ']');
+}
+
 static CONCRETE_IO_HANDLE http_proxy_io_create(void* io_create_parameters)
 {
     HTTP_PROXY_IO_INSTANCE* result;
@@ -377,7 +384,9 @@ static void on_underlying_io_open_complete(void* context, IO_OPEN_RESULT_DETAILE
                     int connect_request_length;
                     const char* auth_string_payload;
                     /* Codes_SRS_HTTP_PROXY_IO_01_075: [ The Request-URI portion of the Request-Line is always an 'authority' as defined by URI Generic Syntax [2], which is to say the host name and port number destination of the requested connection separated by a colon: ]*/
-                    const char request_format[] = "CONNECT %s:%d HTTP/1.1\r\nHost:%s:%d%s%s\r\n\r\n";
+                    const char* request_format = host_needs_ipv6_brackets(http_proxy_io_instance->hostname)
+                        ? "CONNECT [%s]:%d HTTP/1.1\r\nHost:[%s]:%d%s%s\r\n\r\n"
+                        : "CONNECT %s:%d HTTP/1.1\r\nHost:%s:%d%s%s\r\n\r\n";
                     const char proxy_basic[] = "\r\nProxy-authorization: Basic ";
                     if (http_proxy_io_instance->username != NULL)
                     {

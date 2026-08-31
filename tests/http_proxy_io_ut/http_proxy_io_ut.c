@@ -261,6 +261,15 @@ static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_no_username = {
     NULL
     };
 
+static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_ipv6_no_username = {
+    "2001:db8::1",
+    443,
+    "a_proxy",
+    4444,
+    NULL,
+    NULL
+    };
+
 static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_with_username = {
     "another_test_host",
     445,
@@ -1667,6 +1676,31 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     const char connect_request[] = "CONNECT test_host:443 HTTP/1.1\r\nHost:test_host:443\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    umock_c_reset_all_calls();
+
+    EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
+    STRICT_EXPECTED_CALL(xio_send(TEST_IO_HANDLE, IGNORED_PTR_ARG, sizeof(connect_request) - 1, IGNORED_PTR_ARG, NULL))
+        .ValidateArgumentBuffer(2, connect_request, sizeof(connect_request) - 1);
+    EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
+
+    // act
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+
+    // assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // cleanup
+    http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
+}
+
+TEST_FUNCTION(when_the_target_host_is_ipv6_the_CONNECT_authority_is_bracketed)
+{
+    // arrange
+    CONCRETE_IO_HANDLE http_io;
+    const char connect_request[] = "CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost:[2001:db8::1]:443\r\n\r\n";
+
+    http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_ipv6_no_username);
     (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
