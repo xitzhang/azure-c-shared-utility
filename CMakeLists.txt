@@ -9,7 +9,6 @@ cmake_policy(SET CMP0063 NEW)
 if (TARGET aziotsharedutil)
     RETURN()
 endif()
-
 project(azure_c_shared_utility)
 
 FILE(READ ${CMAKE_CURRENT_LIST_DIR}/version.txt C_SHARED_VERSION)
@@ -601,4 +600,3 @@ else()
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
-

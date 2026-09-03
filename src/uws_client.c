@@ -33,6 +33,19 @@ static const size_t HTTP_HEADER_KEY_VALUE_SEPARATOR_LENGTH = 2;
 static const char* HTTP_HEADER_TERMINATOR = "\r\n";
 static const size_t HTTP_HEADER_TERMINATOR_LENGTH = 2;
 
+static bool host_needs_ipv6_brackets(const char* hostname)
+{
+    size_t hostname_length = strlen(hostname);
+    return strchr(hostname, ':') != NULL &&
+        !(hostname_length >= 2 && hostname[0] == '[' && hostname[hostname_length - 1] == ']');
+}
+
+static size_t host_without_scope_length(const char* hostname)
+{
+    const char* scope = strchr(hostname, '%');
+    return (scope == NULL) ? strlen(hostname) : (size_t)(scope - hostname);
+}
+
 /* Requirements not needed as they are optional:
 Codes_SRS_UWS_CLIENT_01_254: [ If an endpoint receives a Ping frame and has not yet sent Pong frame(s) in response to previous Ping frame(s), the endpoint MAY elect to send a Pong frame for only the most recently processed Ping frame. ]
 Codes_SRS_UWS_CLIENT_01_255: [ A Pong frame MAY be sent unsolicited. ]
@@ -825,13 +838,22 @@ static void on_underlying_io_open_complete(void* context, IO_OPEN_RESULT_DETAILE
                     /* Codes_SRS_UWS_CLIENT_01_096: [ The request MAY include a header field with the name |Sec-WebSocket-Protocol|. ]*/
                     /* Codes_SRS_UWS_CLIENT_01_100: [ The request MAY include a header field with the name |Sec-WebSocket-Extensions|. ]*/
                     /* Codes_SRS_UWS_CLIENT_01_101: [ The request MAY include any other header fields, for example, cookies [RFC6265] and/or authentication-related header fields such as the |Authorization| header field [RFC2616], which are processed according to documents that define them. ] */
-                    const char upgrade_request_format[] = "GET %s HTTP/1.1\r\n"
-                        "Host: %s:%d\r\n"
-                        "Upgrade: websocket\r\n"
-                        "Connection: Upgrade\r\n"
-                        "Sec-WebSocket-Key: %s\r\n"
-                        "Sec-WebSocket-Version: 13\r\n"
-                        "%s"; // custom headers
+                    const size_t authority_host_length = host_without_scope_length(uws_client->hostname);
+                    const char* upgrade_request_format = host_needs_ipv6_brackets(uws_client->hostname)
+                        ? "GET %s HTTP/1.1\r\n"
+                            "Host: [%.*s]:%d\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Key: %s\r\n"
+                            "Sec-WebSocket-Version: 13\r\n"
+                            "%s"
+                        : "GET %s HTTP/1.1\r\n"
+                            "Host: %.*s:%d\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Key: %s\r\n"
+                            "Sec-WebSocket-Version: 13\r\n"
+                            "%s"; // custom headers
                     const char web_socket_protocol_format[] = "Sec-WebSocket-Protocol: %s";
 
                     const char* base64_nonce_chars = STRING_c_str(base64_nonce);
@@ -871,6 +893,7 @@ static void on_underlying_io_open_complete(void* context, IO_OPEN_RESULT_DETAILE
                         {
                             upgrade_request_length = sprintf(upgrade_request, upgrade_request_format,
                                 uws_client->resource_name,
+                                (int)authority_host_length,
                                 uws_client->hostname,
                                 uws_client->port,
                                 base64_nonce_chars,
@@ -2381,4 +2404,3 @@ void clear_pending_sends(UWS_CLIENT_INSTANCE* uws_client)
         LogInfo("%s: cancelled frame %p", __FUNCTION__, first_pending_send);
     }
 }
-

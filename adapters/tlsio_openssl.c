@@ -82,6 +82,31 @@ typedef struct TLS_IO_INSTANCE_TAG
     bool ignore_host_name_check;
 } TLS_IO_INSTANCE;
 
+static int copy_host_without_scope(char** destination, const char* hostname)
+{
+    int result;
+    const char* scope = strchr(hostname, '%');
+    const size_t hostname_length =
+        (scope != NULL && memchr(hostname, ':', (size_t)(scope - hostname)) != NULL)
+        ? (size_t)(scope - hostname)
+        : strlen(hostname);
+    const size_t allocation_size = safe_add_size_t(hostname_length, 1);
+
+    if (allocation_size == SIZE_MAX ||
+        (*destination = (char*)malloc(allocation_size)) == NULL)
+    {
+        result = __FAILURE__;
+    }
+    else
+    {
+        (void)memcpy(*destination, hostname, hostname_length);
+        (*destination)[hostname_length] = '\0';
+        result = 0;
+    }
+
+    return result;
+}
+
 struct CRYPTO_dynlock_value
 {
     LOCK_HANDLE lock;
@@ -2170,7 +2195,10 @@ static int enable_domain_check(TLS_IO_INSTANCE* tlsInstance)
         X509_VERIFY_PARAM *param = SSL_get0_param(tlsInstance->ssl);
 
         X509_VERIFY_PARAM_set_hostflags(param, 0);
-        if (!X509_VERIFY_PARAM_set1_host(param, tlsInstance->hostname, strlen(tlsInstance->hostname)))
+        if ((strchr(tlsInstance->hostname, ':') != NULL &&
+             !X509_VERIFY_PARAM_set1_ip_asc(param, tlsInstance->hostname)) ||
+            (strchr(tlsInstance->hostname, ':') == NULL &&
+             !X509_VERIFY_PARAM_set1_host(param, tlsInstance->hostname, strlen(tlsInstance->hostname))))
         {
             result = __FAILURE__;
         }
@@ -2313,7 +2341,8 @@ static int create_openssl_instance(TLS_IO_INSTANCE* tlsInstance)
                         log_ERR_get_error("Failed creating OpenSSL instance.");
                         result = __FAILURE__;
                     }
-                    else if (SSL_set_tlsext_host_name(tlsInstance->ssl, tlsInstance->hostname) != 1)
+                    else if (strchr(tlsInstance->hostname, ':') == NULL &&
+                             SSL_set_tlsext_host_name(tlsInstance->ssl, tlsInstance->hostname) != 1)
                     {
                         SSL_free(tlsInstance->ssl);
                         tlsInstance->ssl = NULL;
@@ -2470,7 +2499,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
         }
         else
         {
-            if (mallocAndStrcpy_s((char **)&result->hostname, tls_io_config->hostname) != 0)
+            if (copy_host_without_scope((char **)&result->hostname, tls_io_config->hostname) != 0)
             {
                 free(result);
                 result = NULL;
@@ -2499,6 +2528,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
 
                 if (underlying_io_interface == NULL)
                 {
+                    free((void*)result->hostname);
                     free(result);
                     result = NULL;
                     LogError("Failed getting socket IO interface description.");
@@ -2532,6 +2562,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
                     result->underlying_io = xio_create(underlying_io_interface, io_interface_parameters);
                     if (result->underlying_io == NULL)
                     {
+                        free((void*)result->hostname);
                         free(result);
                         result = NULL;
                         LogError("Failed xio_create.");
