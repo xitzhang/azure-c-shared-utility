@@ -57,6 +57,12 @@ static bool host_needs_ipv6_brackets(const char* hostname)
         !(hostname_length >= 2 && hostname[0] == '[' && hostname[hostname_length - 1] == ']');
 }
 
+static size_t host_without_scope_length(const char* hostname)
+{
+    const char* scope = strchr(hostname, '%');
+    return (scope == NULL) ? strlen(hostname) : (size_t)(scope - hostname);
+}
+
 static CONCRETE_IO_HANDLE http_proxy_io_create(void* io_create_parameters)
 {
     HTTP_PROXY_IO_INSTANCE* result;
@@ -384,9 +390,10 @@ static void on_underlying_io_open_complete(void* context, IO_OPEN_RESULT_DETAILE
                     int connect_request_length;
                     const char* auth_string_payload;
                     /* Codes_SRS_HTTP_PROXY_IO_01_075: [ The Request-URI portion of the Request-Line is always an 'authority' as defined by URI Generic Syntax [2], which is to say the host name and port number destination of the requested connection separated by a colon: ]*/
+                    const size_t authority_host_length = host_without_scope_length(http_proxy_io_instance->hostname);
                     const char* request_format = host_needs_ipv6_brackets(http_proxy_io_instance->hostname)
-                        ? "CONNECT [%s]:%d HTTP/1.1\r\nHost:[%s]:%d%s%s\r\n\r\n"
-                        : "CONNECT %s:%d HTTP/1.1\r\nHost:%s:%d%s%s\r\n\r\n";
+                        ? "CONNECT [%.*s]:%d HTTP/1.1\r\nHost:[%.*s]:%d%s%s\r\n\r\n"
+                        : "CONNECT %.*s:%d HTTP/1.1\r\nHost:%.*s:%d%s%s\r\n\r\n";
                     const char proxy_basic[] = "\r\nProxy-authorization: Basic ";
                     if (http_proxy_io_instance->username != NULL)
                     {
@@ -426,8 +433,10 @@ static void on_underlying_io_open_complete(void* context, IO_OPEN_RESULT_DETAILE
                         {
                             /* Codes_SRS_HTTP_PROXY_IO_01_059: [ - If `username` and `password` have been specified in the arguments passed to `http_proxy_io_create`, then the header `Proxy-Authorization` shall be added to the request. ]*/
                             connect_request_length = sprintf(connect_request, request_format,
+                                (int)authority_host_length,
                                 http_proxy_io_instance->hostname,
                                 http_proxy_io_instance->port,
+                                (int)authority_host_length,
                                 http_proxy_io_instance->hostname,
                                 http_proxy_io_instance->port,
                                 (http_proxy_io_instance->username != NULL) ? proxy_basic : "",

@@ -72,6 +72,17 @@ MOCK_FUNCTION_END();
 MOCK_FUNCTION_WITH_CODE(, void, test_on_send_complete, void*, context, IO_SEND_RESULT, send_result)
 MOCK_FUNCTION_END();
 
+static void test_on_io_open_complete_detailed(void* context, IO_OPEN_RESULT_DETAILED open_result)
+{
+    test_on_io_open_complete(context, open_result.result);
+}
+
+static IO_OPEN_RESULT_DETAILED make_io_open_result_detailed(IO_OPEN_RESULT result)
+{
+    IO_OPEN_RESULT_DETAILED detailed_result = { result, 0 };
+    return detailed_result;
+}
+
 #undef ENABLE_MOCKS
 
 static char* umocktypes_stringify_const_SOCKETIO_CONFIG_ptr(const SOCKETIO_CONFIG** value)
@@ -263,6 +274,15 @@ static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_no_username = {
 
 static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_ipv6_no_username = {
     "2001:db8::1",
+    443,
+    "a_proxy",
+    4444,
+    NULL,
+    NULL
+    };
+
+static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_scoped_ipv6_no_username = {
+    "fe80::1%3",
     443,
     "a_proxy",
     4444,
@@ -673,7 +693,7 @@ TEST_FUNCTION(http_proxy_io_open_opens_the_underlying_IO)
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, http_io, test_on_bytes_received, http_io, test_on_io_error, http_io);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, http_io, test_on_bytes_received, http_io, test_on_io_error, http_io);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -703,7 +723,7 @@ TEST_FUNCTION(when_the_underlying_xio_open_fails_http_proxy_io_open_fails)
         .SetReturn(1);
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, http_io, test_on_bytes_received, http_io, test_on_io_error, http_io);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, http_io, test_on_bytes_received, http_io, test_on_io_error, http_io);
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
@@ -745,7 +765,7 @@ TEST_FUNCTION(http_proxy_io_open_with_NULL_bytes_received_callback_fails)
     umock_c_reset_all_calls();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, http_io, NULL, http_io, test_on_io_error, http_io);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, http_io, NULL, http_io, test_on_io_error, http_io);
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
@@ -766,7 +786,7 @@ TEST_FUNCTION(http_proxy_io_open_with_NULL_on_io_error_callback_fails)
     umock_c_reset_all_calls();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, http_io, test_on_bytes_received, http_io, NULL, http_io);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, http_io, test_on_bytes_received, http_io, NULL, http_io);
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
@@ -783,7 +803,7 @@ TEST_FUNCTION(http_proxy_io_open_with_NULL_handle_fails)
     int result;
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(NULL, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4242, test_on_io_error, (void*)0x4242);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(NULL, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4242, test_on_io_error, (void*)0x4242);
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
@@ -798,11 +818,11 @@ TEST_FUNCTION(http_proxy_io_open_after_open_fails)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
@@ -831,7 +851,7 @@ TEST_FUNCTION(http_proxy_io_open_with_NULL_contexts_is_allowed)
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -853,8 +873,8 @@ TEST_FUNCTION(http_proxy_io_close_closes_the_IO)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -895,8 +915,8 @@ TEST_FUNCTION(when_xio_close_fails_http_proxy_io_close_also_fails)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -945,8 +965,8 @@ TEST_FUNCTION(http_proxy_io_close_when_already_closed_fails)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4245);
     g_on_io_close_complete(g_on_io_close_complete_context);
@@ -971,8 +991,8 @@ TEST_FUNCTION(http_proxy_io_close_with_NULL_close_complete_callback_is_allowed)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -999,8 +1019,8 @@ TEST_FUNCTION(http_proxy_io_close_with_NULL_close_complete_callback_context_is_a
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1027,7 +1047,7 @@ TEST_FUNCTION(http_proxy_io_close_while_opening_indicates_open_as_cancelled)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
@@ -1052,8 +1072,8 @@ TEST_FUNCTION(http_proxy_io_close_while_opening_waiting_for_reply_indicates_open
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
@@ -1078,8 +1098,8 @@ TEST_FUNCTION(http_proxy_io_close_while_closing_indicates_open_as_cancelled)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4242);
     umock_c_reset_all_calls();
 
@@ -1106,8 +1126,8 @@ TEST_FUNCTION(http_proxy_io_send_calls_send_on_the_underlying_IO)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1148,8 +1168,8 @@ TEST_FUNCTION(http_proxy_io_send_with_NULL_buffer_fails)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1173,8 +1193,8 @@ TEST_FUNCTION(http_proxy_io_send_with_zero_size_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1198,8 +1218,8 @@ TEST_FUNCTION(http_proxy_io_send_with_NULL_send_complete_callback_succeeds)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1226,8 +1246,8 @@ TEST_FUNCTION(http_proxy_io_send_when_waiting_for_connect_reply_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     // act
@@ -1250,7 +1270,7 @@ TEST_FUNCTION(http_proxy_io_send_when_opening_underlying_IO_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     // act
@@ -1295,8 +1315,8 @@ TEST_FUNCTION(http_proxy_io_send_when_closing_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4247);
     umock_c_reset_all_calls();
@@ -1321,8 +1341,8 @@ TEST_FUNCTION(http_proxy_io_send_when_IO_is_in_error_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     g_on_io_error(g_on_io_error_context);
     umock_c_reset_all_calls();
@@ -1347,8 +1367,8 @@ TEST_FUNCTION(when_xio_send_fails_http_proxy_io_send_also_fails)
     unsigned char test_buffer[] = { 0x42 };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1376,8 +1396,8 @@ TEST_FUNCTION(http_proxy_io_dowork_calls_the_underlying_IO_dowork)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -1431,8 +1451,8 @@ TEST_FUNCTION(http_proxy_io_dowork_when_closed_does_nothing)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, NULL, NULL);
     g_on_io_close_complete(g_on_io_close_complete_context);
@@ -1653,11 +1673,11 @@ TEST_FUNCTION(underlying_io_open_complete_with_NULL_does_nothing)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     // act
-    g_on_io_open_complete(NULL, IO_OPEN_OK);
+    g_on_io_open_complete(NULL, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1676,7 +1696,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     const char connect_request[] = "CONNECT test_host:443 HTTP/1.1\r\nHost:test_host:443\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
@@ -1685,7 +1705,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1701,7 +1721,7 @@ TEST_FUNCTION(when_the_target_host_is_ipv6_the_CONNECT_authority_is_bracketed)
     const char connect_request[] = "CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost:[2001:db8::1]:443\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_ipv6_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
@@ -1710,7 +1730,32 @@ TEST_FUNCTION(when_the_target_host_is_ipv6_the_CONNECT_authority_is_bracketed)
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
+
+    // assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // cleanup
+    http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
+}
+
+TEST_FUNCTION(when_the_target_host_is_scoped_ipv6_the_CONNECT_authority_omits_the_scope)
+{
+    // arrange
+    CONCRETE_IO_HANDLE http_io;
+    const char connect_request[] = "CONNECT [fe80::1]:443 HTTP/1.1\r\nHost:[fe80::1]:443\r\n\r\n";
+
+    http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_scoped_ipv6_no_username);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    umock_c_reset_all_calls();
+
+    EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
+    STRICT_EXPECTED_CALL(xio_send(TEST_IO_HANDLE, IGNORED_PTR_ARG, sizeof(connect_request) - 1, IGNORED_PTR_ARG, NULL))
+        .ValidateArgumentBuffer(2, connect_request, sizeof(connect_request) - 1);
+    EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
+
+    // act
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1727,7 +1772,7 @@ TEST_FUNCTION(when_xio_send_fails_on_open_complete_is_triggered_with_IO_OPEN_ERR
     const char connect_request[] = "CONNECT test_host:443 HTTP/1.1\r\nHost:test_host:443\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
@@ -1739,7 +1784,7 @@ TEST_FUNCTION(when_xio_send_fails_on_open_complete_is_triggered_with_IO_OPEN_ERR
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1757,7 +1802,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_send_error_succeeds)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
@@ -1768,7 +1813,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_send_error_succeeds)
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_ERROR));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -1780,7 +1825,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_send_error_succeeds)
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -1797,7 +1842,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_connect_request_fails_on_open_compl
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
@@ -1806,7 +1851,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_connect_request_fails_on_open_compl
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_ERROR));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1823,13 +1868,13 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_allocation_error_error_su
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_no_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
         .SetReturn(NULL);
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -1841,7 +1886,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_allocation_error_error_su
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -1866,7 +1911,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     const char base64encoded[] = "__encoded_base64__";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG)); // auth
@@ -1882,7 +1927,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     STRICT_EXPECTED_CALL(STRING_delete(TEST_STRING_HANDLE));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1906,7 +1951,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     const char base64encoded[] = "__encoded_base64__";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username_cased);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG)); // auth
@@ -1922,7 +1967,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
     STRICT_EXPECTED_CALL(STRING_delete(TEST_STRING_HANDLE));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1939,7 +1984,7 @@ TEST_FUNCTION(when_Base64_Encode_Bytes_fails_on_open_complete_is_triggered_with_
     const char plain_auth_string[] = "le_user:le_password";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG)); // auth
@@ -1951,7 +1996,7 @@ TEST_FUNCTION(when_Base64_Encode_Bytes_fails_on_open_complete_is_triggered_with_
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG)); // auth
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -1969,7 +2014,7 @@ TEST_FUNCTION(after_Base64_Encode_Bytes_fails_http_proxy_io_open_succeeds)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG)); // auth
@@ -1977,7 +2022,7 @@ TEST_FUNCTION(after_Base64_Encode_Bytes_fails_http_proxy_io_open_succeeds)
         .ValidateArgumentBuffer(1, plain_auth_string, sizeof(plain_auth_string) - 1)
         .SetReturn(NULL);
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -1989,7 +2034,7 @@ TEST_FUNCTION(after_Base64_Encode_Bytes_fails_http_proxy_io_open_succeeds)
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2006,7 +2051,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_plain_auth_string_fails_on_open_com
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
@@ -2015,7 +2060,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_plain_auth_string_fails_on_open_com
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_ERROR));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2032,13 +2077,13 @@ TEST_FUNCTION(after_allocating_memory_for_the_plain_auth_string_fails_http_proxy
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
         .SetReturn(NULL); // auth
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -2050,7 +2095,7 @@ TEST_FUNCTION(after_allocating_memory_for_the_plain_auth_string_fails_http_proxy
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2067,14 +2112,14 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_error_yields_an_error)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_ERROR));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_ERROR));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2091,8 +2136,8 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_error_http_proxy_io_open
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_ERROR));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -2104,7 +2149,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_error_http_proxy_io_open
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2121,14 +2166,14 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_cancelled_yields_an_error)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_CANCELLED));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_CANCELLED));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2145,8 +2190,8 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_cancelled_http_proxy_io_
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_CANCELLED));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -2158,7 +2203,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_cancelled_http_proxy_io_
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2175,15 +2220,15 @@ TEST_FUNCTION(when_on_underlying_io_open_complete_is_called_when_waiting_for_con
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
     STRICT_EXPECTED_CALL(test_on_io_open_complete((void*)0x4242, IO_OPEN_ERROR));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2200,9 +2245,9 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_is_called_when_waiting_for_co
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
@@ -2214,7 +2259,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_is_called_when_waiting_for_co
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2231,15 +2276,15 @@ TEST_FUNCTION(on_underlying_io_open_complete_in_OPEN_indicates_an_error)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(test_on_io_error((void*)0x4244));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2255,8 +2300,8 @@ TEST_FUNCTION(on_underlying_io_open_complete_in_CLOSING_indicates_an_error)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_io_open_complete_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4246);
     umock_c_reset_all_calls();
@@ -2264,7 +2309,7 @@ TEST_FUNCTION(on_underlying_io_open_complete_in_CLOSING_indicates_an_error)
     STRICT_EXPECTED_CALL(test_on_io_error((void*)0x4244));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2282,8 +2327,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_1_byte_buffers_the_received_b
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2305,8 +2350,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_2_times_1_byte_buffers_the_re
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, 1);
     umock_c_reset_all_calls();
 
@@ -2332,8 +2377,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_good_reply_indicates_OPEN_O
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2356,8 +2401,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_good_reply_in_2_chunks_indi
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 2);
     umock_c_reset_all_calls();
 
@@ -2381,8 +2426,8 @@ TEST_FUNCTION(when_allocating_memory_for_cached_data_in_on_underlying_io_bytes_a
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG))
@@ -2411,8 +2456,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_good_reply_status_code_201_
     static const char connect_response_201[] = "HTTP/1.1 201\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2439,8 +2484,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_good_reply_status_code_299_
     static const char connect_response_299[] = "HTTP/1.1 299\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2468,8 +2513,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_good_reply_status_code_200_
     static const char connect_response_200[] = "HTTP/1.1 200 Blah blah\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2493,8 +2538,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_199_code_indicates_an_error
     static const char connect_response_199[] = "HTTP/1.1 199\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2519,8 +2564,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_300_code_indicates_an_error
     static const char connect_response_300[] = "HTTP/1.1 300\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2546,8 +2591,8 @@ TEST_FUNCTION(after_a_bad_status_code_http_proxy_io_open_succeeds)
     int result;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response_300, sizeof(connect_response_300) - 1);
     umock_c_reset_all_calls();
 
@@ -2560,7 +2605,7 @@ TEST_FUNCTION(after_a_bad_status_code_http_proxy_io_open_succeeds)
         .IgnoreArgument_on_io_error_context();
 
     // act
-    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    result = http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
 
     // assert
     ASSERT_ARE_EQUAL(int, 0, result);
@@ -2579,8 +2624,8 @@ TEST_FUNCTION(one_extra_byte_gets_indicated_as_received)
     static const unsigned char expected_bytes[] = { 'A' };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2607,8 +2652,8 @@ TEST_FUNCTION(three_extra_byte_get_indicated_as_received)
     static const unsigned char expected_bytes[] = { 'A', 'B', 'C' };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2634,8 +2679,8 @@ TEST_FUNCTION(bytes_indicated_as_received_in_OPEN_get_bubbled_up)
     static const unsigned char expected_bytes[] = { 'A', 'B', 'C' };
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2659,7 +2704,7 @@ TEST_FUNCTION(if_bytes_are_indicated_as_received_while_opening_the_underlying_IO
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
@@ -2683,8 +2728,8 @@ TEST_FUNCTION(a_bad_reply_triggers_an_error_in_open_complete_callback)
     static const char bad_reply[] = "HTTP/1.1 \r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2709,8 +2754,8 @@ TEST_FUNCTION(a_bad_reply_malformed_char_triggers_an_error_in_open_complete_call
     static const char bad_reply[] = "HYTP/1.1 200\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2735,8 +2780,8 @@ TEST_FUNCTION(a_bad_reply_only_one_char_triggers_an_error_in_open_complete_callb
     static const char bad_reply[] = "H\r\n\r\n";
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -2760,8 +2805,8 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_NULL_does_nothing)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     // act
@@ -2783,8 +2828,8 @@ TEST_FUNCTION(on_underlying_io_close_complete_in_CLOSING_triggers_the_close_comp
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -2808,8 +2853,8 @@ TEST_FUNCTION(on_underlying_io_close_complete_in_OPEN_does_nothing)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, test_on_io_close_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -2831,8 +2876,8 @@ TEST_FUNCTION(on_underlying_io_close_complete_in_CLOSING_with_NULL_callback_does
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     (void)http_proxy_io_get_interface_description()->concrete_io_close(http_io, NULL, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -2856,8 +2901,8 @@ TEST_FUNCTION(on_underlying_io_error_with_NULL_handle_does_nothing)
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2878,8 +2923,8 @@ TEST_FUNCTION(when_on_underlying_io_error_is_called_in_OPEN_the_error_is_indicat
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response, sizeof(connect_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2902,8 +2947,8 @@ TEST_FUNCTION(when_on_underlying_io_error_is_called_while_waiting_for_CONNECT_re
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
@@ -2926,7 +2971,7 @@ TEST_FUNCTION(when_on_underlying_io_error_is_called_while_waiting_for_underlying
     CONCRETE_IO_HANDLE http_io;
 
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config_with_username);
-    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
+    (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete_detailed, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
