@@ -684,6 +684,7 @@ TEST_FUNCTION(http_proxy_io_open_opens_the_underlying_IO)
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -713,6 +714,7 @@ TEST_FUNCTION(when_the_underlying_xio_open_fails_http_proxy_io_open_fails)
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -842,6 +844,7 @@ TEST_FUNCTION(http_proxy_io_open_with_NULL_contexts_is_allowed)
     http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1816,6 +1819,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_send_error_succeeds)
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1877,6 +1881,7 @@ TEST_FUNCTION(http_proxy_io_open_after_CONNECT_request_allocation_error_error_su
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2025,6 +2030,7 @@ TEST_FUNCTION(after_Base64_Encode_Bytes_fails_http_proxy_io_open_succeeds)
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2086,6 +2092,7 @@ TEST_FUNCTION(after_allocating_memory_for_the_plain_auth_string_fails_http_proxy
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2140,6 +2147,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_error_http_proxy_io_open
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_ERROR));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2194,6 +2202,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_with_cancelled_http_proxy_io_
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_CANCELLED));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2250,6 +2259,7 @@ TEST_FUNCTION(after_on_underlying_io_open_complete_is_called_when_waiting_for_co
     g_on_io_open_complete(g_on_io_open_complete_context, make_io_open_result_detailed(IO_OPEN_OK));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2596,6 +2606,7 @@ TEST_FUNCTION(after_a_bad_status_code_http_proxy_io_open_succeeds)
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)connect_response_300, sizeof(connect_response_300) - 1);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()

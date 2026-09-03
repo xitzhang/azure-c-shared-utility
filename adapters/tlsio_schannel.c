@@ -1033,7 +1033,12 @@ CONCRETE_IO_HANDLE tlsio_schannel_create(void* io_create_parameters)
         {
             (void)memset(result, 0, sizeof(TLS_IO_INSTANCE));
 
-            size_t malloc_size = safe_add_size_t(strlen(tls_io_config->hostname), 1);
+            const char* scope = strchr(tls_io_config->hostname, '%');
+            const size_t host_name_length =
+                (scope != NULL && memchr(tls_io_config->hostname, ':', (size_t)(scope - tls_io_config->hostname)) != NULL)
+                ? (size_t)(scope - tls_io_config->hostname)
+                : strlen(tls_io_config->hostname);
+            size_t malloc_size = safe_add_size_t(host_name_length, 1);
             malloc_size = safe_multiply_size_t(malloc_size, sizeof(SEC_TCHAR));
             if (malloc_size == SIZE_MAX ||
                 (result->host_name = (SEC_TCHAR*)malloc(malloc_size)) == NULL)
@@ -1049,11 +1054,11 @@ CONCRETE_IO_HANDLE tlsio_schannel_create(void* io_create_parameters)
                 void* io_interface_parameters;
 
                 #ifdef WINCE
-                /* Copy hostname including the null terminator */
-                (void)mbstowcs(result->host_name, tls_io_config->hostname, strlen(tls_io_config->hostname) + 1);
+                (void)mbstowcs(result->host_name, tls_io_config->hostname, host_name_length);
                 #else
-                (void)strcpy(result->host_name, tls_io_config->hostname);
+                (void)memcpy(result->host_name, tls_io_config->hostname, host_name_length);
                 #endif
+                result->host_name[host_name_length] = 0;
 
                 if (tls_io_config->underlying_io_interface != NULL)
                 {
