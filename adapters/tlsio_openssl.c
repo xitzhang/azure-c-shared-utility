@@ -82,6 +82,40 @@ typedef struct TLS_IO_INSTANCE_TAG
     bool ignore_host_name_check;
 } TLS_IO_INSTANCE;
 
+static bool is_ip_literal(const char* hostname)
+{
+    // A colon cannot appear in a DNS name, so it marks an IPv6 literal. A DNS
+    // name always has a non-numeric label, so digits and dots mark an IPv4 one.
+    return strchr(hostname, ':') != NULL ||
+        (strchr(hostname, '.') != NULL &&
+         hostname[strspn(hostname, "0123456789.")] == '\0');
+}
+
+static int copy_host_without_scope(char** destination, const char* hostname)
+{
+    int result;
+    const char* scope = strchr(hostname, '%');
+    const size_t hostname_length =
+        (scope != NULL && memchr(hostname, ':', (size_t)(scope - hostname)) != NULL)
+        ? (size_t)(scope - hostname)
+        : strlen(hostname);
+    const size_t allocation_size = safe_add_size_t(hostname_length, 1);
+
+    if (allocation_size == SIZE_MAX ||
+        (*destination = (char*)malloc(allocation_size)) == NULL)
+    {
+        result = __FAILURE__;
+    }
+    else
+    {
+        (void)memcpy(*destination, hostname, hostname_length);
+        (*destination)[hostname_length] = '\0';
+        result = 0;
+    }
+
+    return result;
+}
+
 struct CRYPTO_dynlock_value
 {
     LOCK_HANDLE lock;
@@ -2168,9 +2202,22 @@ static int enable_domain_check(TLS_IO_INSTANCE* tlsInstance)
 #error "OpenSSL v1.0.2 or above required. See here for details: https://wiki.openssl.org/index.php/Hostname_validation"
 #endif
         X509_VERIFY_PARAM *param = SSL_get0_param(tlsInstance->ssl);
+        int name_check_set;
 
         X509_VERIFY_PARAM_set_hostflags(param, 0);
-        if (!X509_VERIFY_PARAM_set1_host(param, tlsInstance->hostname, strlen(tlsInstance->hostname)))
+
+        // Certificates carry addresses in IP SANs and names in DNS SANs. The two
+        // are matched by different calls, and neither falls back to the other.
+        if (is_ip_literal(tlsInstance->hostname))
+        {
+            name_check_set = X509_VERIFY_PARAM_set1_ip_asc(param, tlsInstance->hostname);
+        }
+        else
+        {
+            name_check_set = X509_VERIFY_PARAM_set1_host(param, tlsInstance->hostname, strlen(tlsInstance->hostname));
+        }
+
+        if (!name_check_set)
         {
             result = __FAILURE__;
         }
@@ -2313,7 +2360,10 @@ static int create_openssl_instance(TLS_IO_INSTANCE* tlsInstance)
                         log_ERR_get_error("Failed creating OpenSSL instance.");
                         result = __FAILURE__;
                     }
-                    else if (SSL_set_tlsext_host_name(tlsInstance->ssl, tlsInstance->hostname) != 1)
+                    // RFC 6066 forbids IP literals in SNI, so the extension is
+                    // left unset for them and the connection proceeds without it.
+                    else if (!is_ip_literal(tlsInstance->hostname) &&
+                             SSL_set_tlsext_host_name(tlsInstance->ssl, tlsInstance->hostname) != 1)
                     {
                         SSL_free(tlsInstance->ssl);
                         tlsInstance->ssl = NULL;
@@ -2470,7 +2520,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
         }
         else
         {
-            if (mallocAndStrcpy_s((char **)&result->hostname, tls_io_config->hostname) != 0)
+            if (copy_host_without_scope((char **)&result->hostname, tls_io_config->hostname) != 0)
             {
                 free(result);
                 result = NULL;
@@ -2499,6 +2549,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
 
                 if (underlying_io_interface == NULL)
                 {
+                    free((void*)result->hostname);
                     free(result);
                     result = NULL;
                     LogError("Failed getting socket IO interface description.");
@@ -2532,6 +2583,7 @@ CONCRETE_IO_HANDLE tlsio_openssl_create(void* io_create_parameters)
                     result->underlying_io = xio_create(underlying_io_interface, io_interface_parameters);
                     if (result->underlying_io == NULL)
                     {
+                        free((void*)result->hostname);
                         free(result);
                         result = NULL;
                         LogError("Failed xio_create.");
