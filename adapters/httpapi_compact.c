@@ -256,6 +256,7 @@ HTTP_HANDLE HTTPAPI_CreateConnection_Advanced(const char* hostName, int port, bo
                 tlsio_config.port = port;
                 tlsio_config.underlying_io_interface = NULL;
                 tlsio_config.underlying_io_parameters = NULL;
+                tlsio_config.enable_ipv6 = 0;
 
                 HTTP_PROXY_IO_CONFIG proxy_config;
                 if (proxyHost != NULL && strlen(proxyHost) > 0)
@@ -291,6 +292,8 @@ HTTP_HANDLE HTTPAPI_CreateConnection_Advanced(const char* hostName, int port, bo
                 socketio_config.hostname = hostName;
                 socketio_config.port = port;
                 socketio_config.accepted_socket = NULL;
+                /* No opt-in plumbed to this path yet; keep the pre-IPv6 IPv4-only lookup. */
+                socketio_config.enable_ipv6 = 0;
 
                 http_instance->xio_handle = xio_create(socketio_get_interface_description(), (void*)&socketio_config);
             }
