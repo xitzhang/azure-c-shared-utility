@@ -69,6 +69,10 @@ static bool g_addrinfo_two_addresses;
 static bool g_addrinfo_dual_stack;
 static int g_last_addrinfo_family;
 static int g_last_select_timeout_ms;
+/* What socketio_open asked of IPV6_V6ONLY, so a test can check the value and
+   not only that the option was touched. */
+static size_t g_v6only_set_count;
+static int g_v6only_last_value;
 static int g_retrieved_enable_ipv6;
 static pfCloneOption g_retrieved_clone_option;
 static pfDestroyOption g_retrieved_destroy_option;
@@ -150,6 +154,11 @@ if (optval != NULL)
 }
 MOCK_FUNCTION_END(0)
 MOCK_FUNCTION_WITH_CODE(WSAAPI, int, setsockopt, SOCKET, s, int, level, int, optname, SOCKET_CONST_BUFFER, optval, int, optlen)
+if ((level == IPPROTO_IPV6) && (optname == IPV6_V6ONLY) && (optval != NULL))
+{
+    g_v6only_set_count++;
+    g_v6only_last_value = *(const int*)optval;
+}
 MOCK_FUNCTION_END(0)
 MOCK_FUNCTION_WITH_CODE(WSAAPI, PCSTR, inet_ntop, INT, family, const VOID*, address, PSTR, buffer, size_t, buffer_size)
 MOCK_FUNCTION_END(NULL)
@@ -510,6 +519,8 @@ TEST_FUNCTION_INITIALIZE(method_init)
     g_addrinfo_dual_stack = false;
     g_last_addrinfo_family = AF_UNSPEC;
     g_last_select_timeout_ms = 0;
+    g_v6only_set_count = 0;
+    g_v6only_last_value = -1;
     g_retrieved_enable_ipv6 = -1;
     g_retrieved_clone_option = NULL;
     g_retrieved_destroy_option = NULL;
@@ -789,6 +800,62 @@ TEST_FUNCTION(socketio_open_ipv4_and_localhost_literals_keep_the_default_AF_INET
         socketio_destroy(ioHandle);
     }
 }
+
+/* The opt-in belongs to the IO instance, not to one connection: an IO that is
+   closed and opened again, as a WebSocket client does when it reconnects, keeps
+   asking the resolver for both families every time. */
+TEST_FUNCTION(socketio_open_keeps_the_ipv6_opt_in_across_close_and_reopen)
+{
+    int cycle;
+    SOCKETIO_CONFIG socketConfig = { HOSTNAME_ARG, PORT_NUM, NULL, 1 };
+    CONCRETE_IO_HANDLE ioHandle = socketio_create(&socketConfig);
+
+    for (cycle = 0; cycle < 4; cycle++)
+    {
+        g_last_addrinfo_family = -1;
+        open_and_assert_resolver_family(ioHandle, AF_UNSPEC);
+
+        umock_c_reset_all_calls();
+        EXPECTED_CALL(closesocket(IGNORED_NUM_ARG));
+        ASSERT_ARE_EQUAL(int, 0, socketio_close(ioHandle, NULL, NULL));
+        ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+    }
+
+    socketio_destroy(ioHandle);
+}
+
+/* Windows creates an AF_INET6 socket v6-only, and a v6-only socket refuses an
+   IPv4-mapped destination such as ::ffff:203.0.113.1 before sending anything.
+   Touching the option is not enough: the value handed to setsockopt must be 0. */
+TEST_FUNCTION(socketio_open_makes_an_ipv6_candidate_socket_dual_stack)
+{
+    int result;
+    SOCKETIO_CONFIG socketConfig = { HOSTNAME_ARG, PORT_NUM, NULL, 1 };
+    CONCRETE_IO_HANDLE ioHandle = socketio_create(&socketConfig);
+    g_addrinfo_dual_stack = true;
+    umock_c_reset_all_calls();
+
+    EXPECTED_CALL(getaddrinfo(IGNORED_PTR_ARG, IGNORED_PTR_ARG, &TEST_ADDR_INFO, IGNORED_PTR_ARG)).IgnoreArgument_pHints();
+    // The first candidate is AF_INET6 and connects at once.
+    EXPECTED_CALL(socket(IGNORED_NUM_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG));
+    EXPECTED_CALL(setsockopt(IGNORED_NUM_ARG, IPPROTO_IPV6, IPV6_V6ONLY, IGNORED_PTR_ARG, IGNORED_NUM_ARG));
+    EXPECTED_CALL(ioctlsocket(IGNORED_NUM_ARG, IGNORED_NUM_ARG, IGNORED_PTR_ARG));
+    EXPECTED_CALL(inet_ntop(IGNORED_NUM_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_NUM_ARG));
+    EXPECTED_CALL(connect(IGNORED_NUM_ARG, &test_sock_addr, IGNORED_NUM_ARG));
+    EXPECTED_CALL(freeaddrinfo(&TEST_ADDR_INFO)).IgnoreArgument_pResult();
+
+    result = socketio_open(ioHandle, test_on_io_open_complete, &callbackContext,
+        test_on_bytes_received, &callbackContext, test_on_io_error, &callbackContext);
+
+    ASSERT_ARE_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(int, AF_INET6, g_connect_families[0]);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_v6only_set_count);
+    ASSERT_ARE_EQUAL(int, 0, g_v6only_last_value);
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    socketio_destroy(ioHandle);
+}
 TEST_FUNCTION(socketio_open_socket_fails)
 {
     // arrange
@@ -1014,6 +1081,36 @@ TEST_FUNCTION(socketio_open_pending_connect_reports_socket_error)
     ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
     ASSERT_ARE_EQUAL(int, WSAECONNREFUSED, g_open_result.code);
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    socketio_destroy(ioHandle);
+}
+
+TEST_FUNCTION(socketio_open_pending_connect_select_failure_reports_the_wsa_error)
+{
+    SOCKETIO_CONFIG socketConfig = { HOSTNAME_ARG, PORT_NUM, NULL };
+    CONCRETE_IO_HANDLE ioHandle = socketio_create(&socketConfig);
+    umock_c_reset_all_calls();
+
+    EXPECTED_CALL(getaddrinfo(IGNORED_PTR_ARG, IGNORED_PTR_ARG, &TEST_ADDR_INFO, IGNORED_PTR_ARG)).IgnoreArgument_pHints();
+    EXPECTED_CALL(socket(IGNORED_NUM_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG));
+    EXPECTED_CALL(ioctlsocket(IGNORED_NUM_ARG, IGNORED_NUM_ARG, IGNORED_PTR_ARG));
+    EXPECTED_CALL(inet_ntop(IGNORED_NUM_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_NUM_ARG));
+    EXPECTED_CALL(connect(IGNORED_NUM_ARG, &test_sock_addr, IGNORED_NUM_ARG)).SetReturn(SOCKET_ERROR);
+    EXPECTED_CALL(WSAGetLastError()).SetReturn(WSAEWOULDBLOCK);
+    // select() itself fails (not a timeout): the candidate fails with the WSA
+    // error select reported and its socket is released.
+    EXPECTED_CALL(select(0, NULL, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG)).SetReturn(SOCKET_ERROR);
+    EXPECTED_CALL(WSAGetLastError()).SetReturn(WSAENOTSOCK);
+    EXPECTED_CALL(closesocket(IGNORED_NUM_ARG));
+    EXPECTED_CALL(freeaddrinfo(&TEST_ADDR_INFO)).IgnoreArgument_pResult();
+
+    int result = socketio_open(ioHandle, test_on_io_open_complete, &callbackContext,
+        test_on_bytes_received, &callbackContext, test_on_io_error, &callbackContext);
+
+    ASSERT_ARE_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
+    ASSERT_ARE_EQUAL(int, WSAENOTSOCK, g_open_result.code);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
     socketio_destroy(ioHandle);

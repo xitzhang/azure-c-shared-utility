@@ -97,8 +97,18 @@ typedef enum ATTEMPT_OUTCOME_TAG
 {
     ATTEMPT_TIMES_OUT,
     ATTEMPT_SUCCEEDS,
-    ATTEMPT_REFUSED
+    ATTEMPT_REFUSED,
+    // poll() is interrupted by a signal once (-1, EINTR) and then reports the
+    // socket as settled; SO_ERROR reads 0.
+    ATTEMPT_EINTR_THEN_SUCCEEDS,
+    // poll() itself fails with EBADF (not a timeout, not EINTR).
+    ATTEMPT_POLL_FAILS
 } ATTEMPT_OUTCOME;
+
+// Candidate "families" that make the mocked getaddrinfo hand back a malformed
+// entry, so the adapter's pre-socket validation can be exercised.
+#define CANDIDATE_INVALID_FAMILY (-1)   /* ai_family is AF_UNIX */
+#define CANDIDATE_SHORT_ADDRLEN (-2)    /* AF_INET6 with a sockaddr_in-sized length */
 
 static int g_candidate_families[MAX_CANDIDATES];
 static size_t g_candidate_count;
@@ -109,6 +119,10 @@ static int g_connect_families[MAX_CANDIDATES];
 static size_t g_connect_attempt_count;
 static int g_poll_timeouts_ms[MAX_CANDIDATES];
 static size_t g_poll_count;
+static size_t g_poll_count_at_attempt_start;
+static int g_socket_domains[MAX_CANDIDATES];
+static int g_socket_types[MAX_CANDIDATES];
+static size_t g_socket_count;
 static size_t g_v6only_cleared_count;
 static int g_v6only_last_value;
 static int g_last_addrinfo_family;
@@ -169,6 +183,12 @@ static ATTEMPT_OUTCOME current_attempt_outcome(void)
 // which is what lets the leak check below mean something.
 MOCK_FUNCTION_WITH_CODE(, int, socket, int, domain, int, type, int, protocol)
 int new_fd = open("/dev/null", O_RDWR);
+if (g_socket_count < MAX_CANDIDATES)
+{
+    g_socket_domains[g_socket_count] = domain;
+    g_socket_types[g_socket_count] = type;
+}
+g_socket_count++;
 MOCK_FUNCTION_END(new_fd)
 
 // close() is deliberately NOT mocked. It is a libc symbol the whole process
@@ -183,6 +203,7 @@ if ((addr != NULL) && (g_connect_attempt_count < MAX_CANDIDATES))
     g_connect_families[g_connect_attempt_count] = addr->sa_family;
 }
 g_connect_attempt_count++;
+g_poll_count_at_attempt_start = g_poll_count;
 // Always report "in progress" so the adapter takes the poll path, which is
 // where the per-address grant is applied.
 errno = EINPROGRESS;
@@ -190,14 +211,29 @@ MOCK_FUNCTION_END(-1)
 
 MOCK_FUNCTION_WITH_CODE(, int, poll, struct pollfd*, fds, nfds_t, nfds, int, timeout)
 int poll_result;
+ATTEMPT_OUTCOME outcome = current_attempt_outcome();
 if (g_poll_count < MAX_CANDIDATES)
 {
     g_poll_timeouts_ms[g_poll_count] = timeout;
 }
 g_poll_count++;
-// 0 means the grant ran out; anything positive means the socket settled and
-// the adapter goes on to read SO_ERROR.
-poll_result = (current_attempt_outcome() == ATTEMPT_TIMES_OUT) ? 0 : 1;
+if ((outcome == ATTEMPT_EINTR_THEN_SUCCEEDS) && (g_poll_count - g_poll_count_at_attempt_start == 1))
+{
+    // First poll of this attempt is interrupted by a signal.
+    errno = EINTR;
+    poll_result = -1;
+}
+else if (outcome == ATTEMPT_POLL_FAILS)
+{
+    errno = EBADF;
+    poll_result = -1;
+}
+else
+{
+    // 0 means the grant ran out; anything positive means the socket settled and
+    // the adapter goes on to read SO_ERROR.
+    poll_result = (outcome == ATTEMPT_TIMES_OUT) ? 0 : 1;
+}
 MOCK_FUNCTION_END(poll_result)
 
 MOCK_FUNCTION_WITH_CODE(, int, getsockopt, int, sockfd, int, level, int, optname, void*, optval, socklen_t*, optlen)
@@ -225,10 +261,19 @@ g_last_addrinfo_flags = (hints != NULL) ? hints->ai_flags : -1;
 for (candidate_index = 0; (getaddrinfo_result == 0) && (candidate_index < g_candidate_count); candidate_index++)
 {
     struct addrinfo* entry = (struct addrinfo*)calloc(1, sizeof(struct addrinfo));
-    entry->ai_family = g_candidate_families[candidate_index];
+    int family = g_candidate_families[candidate_index];
+    entry->ai_family = (family == CANDIDATE_INVALID_FAMILY) ? AF_UNIX : ((family == CANDIDATE_SHORT_ADDRLEN) ? AF_INET6 : family);
     entry->ai_socktype = SOCK_STREAM;
     entry->ai_protocol = IPPROTO_TCP;
-    if (g_candidate_families[candidate_index] == AF_INET6)
+    if (family == CANDIDATE_SHORT_ADDRLEN)
+    {
+        // An AF_INET6 entry whose address is only sockaddr_in-sized.
+        struct sockaddr_in6* sa6 = (struct sockaddr_in6*)calloc(1, sizeof(struct sockaddr_in6));
+        sa6->sin6_family = AF_INET6;
+        entry->ai_addr = (struct sockaddr*)sa6;
+        entry->ai_addrlen = sizeof(struct sockaddr_in);
+    }
+    else if (family == AF_INET6)
     {
         struct sockaddr_in6* sa6 = (struct sockaddr_in6*)calloc(1, sizeof(struct sockaddr_in6));
         sa6->sin6_family = AF_INET6;
@@ -458,9 +503,13 @@ TEST_FUNCTION_INITIALIZE(method_init)
     memset(g_attempt_outcomes, 0, sizeof(g_attempt_outcomes));
     memset(g_connect_families, 0, sizeof(g_connect_families));
     memset(g_poll_timeouts_ms, 0, sizeof(g_poll_timeouts_ms));
+    memset(g_socket_domains, 0, sizeof(g_socket_domains));
+    memset(g_socket_types, 0, sizeof(g_socket_types));
     g_candidate_count = 0;
     g_connect_attempt_count = 0;
     g_poll_count = 0;
+    g_poll_count_at_attempt_start = 0;
+    g_socket_count = 0;
     g_v6only_cleared_count = 0;
     g_v6only_last_value = -1;
     g_last_addrinfo_family = -1;
@@ -925,6 +974,43 @@ TEST_FUNCTION(socketio_setoption_can_turn_the_ipv6_opt_in_back_off_before_open)
     socketio_destroy(ioHandle);
 }
 
+/* The opt-in belongs to the IO instance, not to one connection: an IO that is
+   closed and opened again, as a WebSocket client does when it reconnects, keeps
+   asking the resolver for both families every time and releases each socket. */
+TEST_FUNCTION(socketio_open_keeps_the_ipv6_opt_in_across_close_and_reopen)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+    int cycle;
+
+    given_candidates(1, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    for (cycle = 0; cycle < 4; cycle++)
+    {
+        // Each open starts from the first scripted attempt again.
+        g_connect_attempt_count = 0;
+        g_last_addrinfo_family = -1;
+        g_open_complete_count = 0;
+        g_open_result.result = IO_OPEN_CANCELLED;
+
+        ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+        ASSERT_ARE_EQUAL(int, AF_UNSPEC, g_last_addrinfo_family);
+        ASSERT_ARE_EQUAL(size_t, (size_t)1, g_open_complete_count);
+        ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+        ASSERT_ARE_EQUAL(int, AF_INET6, g_connect_families[0]);
+
+        ASSERT_ARE_EQUAL(int, 0, socketio_close(ioHandle, NULL, NULL));
+        ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+    }
+
+    socketio_destroy(ioHandle);
+}
+
 /* However many candidates are tried, the caller hears about the open once. */
 TEST_FUNCTION(socketio_open_reports_one_open_complete_when_a_later_candidate_connects)
 {
@@ -1014,5 +1100,161 @@ TEST_FUNCTION(socketio_open_can_be_retried_after_every_candidate_failed)
 
     socketio_destroy(ioHandle);
 }
+
+/* A signal landing while the adapter waits for the connect must not fail the
+   candidate: poll() is retried after EINTR and the connect completes. */
+TEST_FUNCTION(socketio_open_retries_poll_after_eintr_and_connects)
+{
+    const int families[] = { AF_INET };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_EINTR_THEN_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(1, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_open_complete_count);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_connect_attempt_count);
+    // One interrupted wait and one completed wait on the same candidate.
+    ASSERT_ARE_EQUAL(size_t, (size_t)2, g_poll_count);
+    // The connected socket is kept open by the instance.
+    ASSERT_ARE_EQUAL(size_t, fds_before + 1, open_fd_count());
+
+    socketio_destroy(ioHandle);
+    ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+}
+
+/* poll() failing outright (not a timeout, not EINTR) fails that candidate with
+   poll's errno, releases its socket and lets the next candidate be tried. */
+TEST_FUNCTION(socketio_open_poll_failure_fails_the_candidate_and_falls_back)
+{
+    const int families[] = { AF_INET6, AF_INET };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_POLL_FAILS, ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(2, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_open_complete_count);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)2, g_connect_attempt_count);
+    ASSERT_ARE_EQUAL(int, AF_INET, g_connect_families[1]);
+    // Only the socket of the candidate that connected is still held.
+    ASSERT_ARE_EQUAL(size_t, fds_before + 1, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+
+TEST_FUNCTION(socketio_open_poll_failure_on_the_only_candidate_reports_poll_errno)
+{
+    const int families[] = { AF_INET };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_POLL_FAILS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(1, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_open_complete_count);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
+    ASSERT_ARE_EQUAL(int, EBADF, g_open_result.code);
+    ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+
+/* Malformed resolver entries are rejected before a socket is created for them,
+   and a later valid candidate still gets its attempt. */
+TEST_FUNCTION(socketio_open_skips_invalid_resolved_addresses_before_creating_a_socket)
+{
+    const int families[] = { CANDIDATE_INVALID_FAMILY, CANDIDATE_SHORT_ADDRLEN, AF_INET };
+    // Outcomes are consumed per connect attempt; only the valid entry connects.
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS, ATTEMPT_SUCCEEDS, ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(3, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_socket_count);
+    ASSERT_ARE_EQUAL(int, AF_INET, g_socket_domains[0]);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_connect_attempt_count);
+    ASSERT_ARE_EQUAL(size_t, fds_before + 1, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+
+TEST_FUNCTION(socketio_open_with_only_invalid_resolved_addresses_fails_without_a_socket)
+{
+    const int families[] = { CANDIDATE_INVALID_FAMILY, CANDIDATE_SHORT_ADDRLEN };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS, ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(2, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_open_complete_count);
+    ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
+    // The last rejection reason is reported (EINVAL for the short address).
+    ASSERT_ARE_EQUAL(int, EINVAL, g_open_result.code);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_socket_count);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_connect_attempt_count);
+    ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+
+#ifndef __APPLE__
+/* SIOCGIFCONF only works on an AF_INET socket, so binding an AF_INET6 connect
+   socket to an interface enumerates on a temporary AF_INET datagram socket -
+   which must be released whatever the enumeration's outcome. */
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_enumerates_on_a_temporary_ipv4_socket)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+    size_t fds_before;
+
+    given_candidates(1, families, outcomes);
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "00:11:22:33:44:55"));
+    fds_before = open_fd_count();
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    // The mocked descriptors are /dev/null, so the enumeration ioctl fails with
+    // ENOTTY; that platform error is what must be reported.
+    ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
+    ASSERT_ARE_EQUAL(int, ENOTTY, g_open_result.code);
+    ASSERT_ARE_EQUAL(size_t, (size_t)2, g_socket_count);
+    ASSERT_ARE_EQUAL(int, AF_INET6, g_socket_domains[0]);
+    ASSERT_ARE_EQUAL(int, SOCK_STREAM, g_socket_types[0]);
+    ASSERT_ARE_EQUAL(int, AF_INET, g_socket_domains[1]);
+    ASSERT_ARE_EQUAL(int, SOCK_DGRAM, g_socket_types[1]);
+    // Both the connect socket and the enumeration socket were released.
+    ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+#endif
 
 END_TEST_SUITE(socketio_berkeley_unittests)

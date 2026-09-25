@@ -7211,6 +7211,32 @@ TEST_FUNCTION(when_xio_setoption_fails_then_uws_set_option_fails)
     uws_client_destroy(uws_client);
 }
 
+/* Tests_SRS_UWS_CLIENT_01_441: [ Otherwise all options shall be passed as they are to the underlying IO by calling `xio_setoption`. ]*/
+/* The IPv6 opt-in reaches the socket of a TLS or proxied WebSocket only through this pass-through,
+   so it must be handed to the underlying IO unchanged rather than handled or dropped here. */
+TEST_FUNCTION(uws_set_option_passes_the_ipv6_opt_in_down_to_the_underlying_io)
+{
+    // arrange
+    UWS_CLIENT_HANDLE uws_client;
+    int enable_ipv6 = 1;
+    int result;
+
+    uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
+    umock_c_reset_all_calls();
+
+    STRICT_EXPECTED_CALL(xio_setoption(TEST_IO_HANDLE, OPTION_ENABLE_IPV6, &enable_ipv6));
+
+    // act
+    result = uws_client_set_option(uws_client, OPTION_ENABLE_IPV6, &enable_ipv6);
+
+    // assert
+    ASSERT_ARE_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    // cleanup
+    uws_client_destroy(uws_client);
+}
+
 /* uws_client_retrieve_options */
 
 /* Tests_SRS_UWS_CLIENT_01_444: [ If parameter `uws_client` is `NULL` then `uws_client_retrieve_options` shall fail and return NULL. ]*/
