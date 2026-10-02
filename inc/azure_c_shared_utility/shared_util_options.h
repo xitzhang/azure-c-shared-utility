@@ -43,6 +43,10 @@ extern "C"
 
     static STATIC_VAR_UNUSED const char* const OPTION_NET_INT_MAC_ADDRESS = "net_interface_mac_address";
 
+    /* Non-zero to let name resolution return IPv6 addresses. Must be set before
+       the connection is opened; it is read during the address lookup. */
+    static STATIC_VAR_UNUSED const char* const OPTION_ENABLE_IPV6 = "enable_ipv6";
+
     static STATIC_VAR_UNUSED const char* const OPTION_TLS_VERSION = "tls_version";
 
     typedef enum TLSIO_VERSION_TAG
