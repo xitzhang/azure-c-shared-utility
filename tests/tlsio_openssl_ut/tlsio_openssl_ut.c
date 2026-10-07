@@ -58,9 +58,18 @@ static int run_handshake(const char* hostname, const char* server_san,
     TLSIO_CONFIG config = { 0 };
     OPEN_RESULT outcome;
     const bool isolate_trust = true;
+    unsigned char ip_san[16];
+    const unsigned char expected_last_byte =
+        strcmp(server_san, "IP:::2") == 0 ? 2 : 1;
 
     if (trusted_ca_pem == NULL ||
         (server = tls_test_server_start(test_ca, server_san)) == NULL)
+    {
+        goto cleanup;
+    }
+    if (tls_test_server_leaf_ip_san(server, ip_san, sizeof(ip_san)) != sizeof(ip_san)
+        || memcmp(ip_san, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 15) != 0
+        || ip_san[15] != expected_last_byte)
     {
         goto cleanup;
     }

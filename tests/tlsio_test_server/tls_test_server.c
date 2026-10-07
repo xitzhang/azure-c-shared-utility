@@ -55,6 +55,8 @@ struct TLS_TEST_SERVER_TAG
     int port;
     int accepted;
     int crl_served;
+    unsigned char leaf_ip_san[16];
+    size_t leaf_ip_san_length;
 #ifdef _WIN32
     int winsock_started;
 #endif
@@ -228,8 +230,43 @@ static int has_valid_ca_chain(X509* certificate, const TLS_TEST_CA* ca)
     {
         result = X509_verify_cert(verification) == 1;
     }
+
     X509_STORE_CTX_free(verification);
     X509_STORE_free(store);
+    return result;
+}
+
+static int capture_leaf_ip_san(TLS_TEST_SERVER* server, X509* certificate)
+{
+    GENERAL_NAMES* names = X509_get_ext_d2i(
+        certificate, NID_subject_alt_name, NULL, NULL);
+    int result = 0;
+
+    if (names != NULL)
+    {
+        int index;
+        int count = sk_GENERAL_NAME_num(names);
+        for (index = 0; index < count; index++)
+        {
+            GENERAL_NAME* name = sk_GENERAL_NAME_value(names, index);
+            if (name->type == GEN_IPADD
+                && server->leaf_ip_san_length == 0
+                && ASN1_STRING_length(name->d.iPAddress) == sizeof(server->leaf_ip_san))
+            {
+                memcpy(server->leaf_ip_san,
+                    ASN1_STRING_get0_data(name->d.iPAddress),
+                    sizeof(server->leaf_ip_san));
+                server->leaf_ip_san_length = sizeof(server->leaf_ip_san);
+            }
+            else
+            {
+                server->leaf_ip_san_length = 0;
+                break;
+            }
+        }
+        result = count == 1 && server->leaf_ip_san_length == sizeof(server->leaf_ip_san);
+    }
+    GENERAL_NAMES_free(names);
     return result;
 }
 
@@ -418,7 +455,8 @@ TLS_TEST_SERVER* tls_test_server_start(TLS_TEST_CA* ca, const char* san)
     server_key = generate_key();
     if (server_key == NULL ||
         (leaf = generate_certificate(server_key, ca->certificate, ca->key, san, crl_url, NULL, ca->next_serial++)) == NULL ||
-        !has_valid_ca_chain(leaf, ca))
+        !has_valid_ca_chain(leaf, ca) ||
+        !capture_leaf_ip_san(server, leaf))
     {
         goto error;
     }
@@ -473,6 +511,19 @@ error:
 int tls_test_server_port(const TLS_TEST_SERVER* server)
 {
     return server == NULL ? 0 : server->port;
+}
+
+size_t tls_test_server_leaf_ip_san(
+    const TLS_TEST_SERVER* server, unsigned char* address, size_t address_size)
+{
+    size_t result = 0;
+    if (server != NULL && address != NULL
+        && server->leaf_ip_san_length <= address_size)
+    {
+        memcpy(address, server->leaf_ip_san, server->leaf_ip_san_length);
+        result = server->leaf_ip_san_length;
+    }
+    return result;
 }
 
 int tls_test_server_stop(TLS_TEST_SERVER* server, int* crl_served)

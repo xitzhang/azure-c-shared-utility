@@ -19,6 +19,7 @@ typedef struct OPEN_RESULT_TAG
 {
     int completed;
     IO_OPEN_RESULT result;
+    int code;
 } OPEN_RESULT;
 
 static TLS_TEST_CA* test_ca;
@@ -52,7 +53,7 @@ static int install_test_ca(void)
     if (certificate != NULL)
     {
         root_store = CertOpenStore(CERT_STORE_PROV_SYSTEM_A, 0, 0,
-            CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, "Root");
+            CERT_SYSTEM_STORE_CURRENT_USER, "Root");
         if (root_store != NULL)
         {
             result = CertAddCertificateContextToStore(root_store, certificate,
@@ -69,10 +70,11 @@ static void open_complete(void* context, IO_OPEN_RESULT_DETAILED result)
     OPEN_RESULT* state = (OPEN_RESULT*)context;
     state->completed = 1;
     state->result = result.result;
+    state->code = result.code;
 }
 
 static int run_handshake(TLS_TEST_CA* issuing_ca, const char* hostname, const char* server_san,
-    int scoped, IO_OPEN_RESULT expected)
+    int scoped, IO_OPEN_RESULT expected, int expected_code)
 {
     TLS_TEST_SERVER* server = tls_test_server_start(issuing_ca, server_san);
     TLSIO_CONFIG config = { 0 };
@@ -82,9 +84,19 @@ static int run_handshake(TLS_TEST_CA* issuing_ca, const char* hostname, const ch
     time_t deadline = time(NULL) + 8;
     int opened = 0;
     int accepted;
+    unsigned char ip_san[16];
+    const unsigned char expected_last_byte =
+        strcmp(server_san, "IP:::2") == 0 ? 2 : 1;
 
     if (server == NULL)
     {
+        return 0;
+    }
+    if (tls_test_server_leaf_ip_san(server, ip_san, sizeof(ip_san)) != sizeof(ip_san)
+        || memcmp(ip_san, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 15) != 0
+        || ip_san[15] != expected_last_byte)
+    {
+        (void)tls_test_server_stop(server, NULL);
         return 0;
     }
     config.hostname = hostname;
@@ -107,7 +119,9 @@ static int run_handshake(TLS_TEST_CA* issuing_ca, const char* hostname, const ch
             tlsio_schannel_dowork(io);
             ThreadAPI_Sleep(1);
         }
-        opened = outcome.completed && outcome.result == expected;
+        opened = outcome.completed
+            && outcome.result == expected
+            && (expected == IO_OPEN_OK || outcome.code == expected_code);
     }
     if (io != NULL)
     {
@@ -145,19 +159,21 @@ TEST_SUITE_CLEANUP(cleanup_ca)
 
 TEST_FUNCTION(trusted_ca_and_matching_ipv6_ip_san_complete_schannel_handshake)
 {
-    ASSERT_IS_TRUE(run_handshake(test_ca, "::1", "IP:::1", 0, IO_OPEN_OK));
+    ASSERT_IS_TRUE(run_handshake(test_ca, "::1", "IP:::1", 0, IO_OPEN_OK, 0));
 }
 
 TEST_FUNCTION(trusted_ca_and_wrong_ipv6_ip_san_reject_schannel_handshake)
 {
-    ASSERT_IS_TRUE(run_handshake(test_ca, "::1", "IP:::2", 0, IO_OPEN_ERROR));
+    ASSERT_IS_TRUE(run_handshake(
+        test_ca, "::1", "IP:::2", 0, IO_OPEN_ERROR, SEC_E_WRONG_PRINCIPAL));
 }
 
 TEST_FUNCTION(untrusted_ca_and_matching_ipv6_ip_san_reject_schannel_handshake)
 {
     TLS_TEST_CA* unrelated_ca = tls_test_ca_create();
     int rejected = unrelated_ca != NULL &&
-        run_handshake(unrelated_ca, "::1", "IP:::1", 0, IO_OPEN_ERROR);
+        run_handshake(
+            unrelated_ca, "::1", "IP:::1", 0, IO_OPEN_ERROR, SEC_E_UNTRUSTED_ROOT);
 
     tls_test_ca_destroy(unrelated_ca);
     ASSERT_IS_TRUE(rejected);
@@ -165,7 +181,7 @@ TEST_FUNCTION(untrusted_ca_and_matching_ipv6_ip_san_reject_schannel_handshake)
 
 TEST_FUNCTION(scoped_ipv6_tls_identity_matches_unscoped_ip_san)
 {
-    ASSERT_IS_TRUE(run_handshake(test_ca, "::1%1", "IP:::1", 1, IO_OPEN_OK));
+    ASSERT_IS_TRUE(run_handshake(test_ca, "::1%1", "IP:::1", 1, IO_OPEN_OK, 0));
 }
 
 END_TEST_SUITE(tlsio_schannel_ipv6_ut)

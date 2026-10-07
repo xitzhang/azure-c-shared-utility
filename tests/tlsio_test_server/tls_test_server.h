@@ -4,6 +4,8 @@
 #ifndef TLS_TEST_SERVER_H
 #define TLS_TEST_SERVER_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +27,8 @@ unsigned char* tls_test_ca_der(const TLS_TEST_CA* ca, int* length);
 // OpenSSL X509V3 value such as "IP:::1" or "IP:::2".
 TLS_TEST_SERVER* tls_test_server_start(TLS_TEST_CA* ca, const char* san);
 int tls_test_server_port(const TLS_TEST_SERVER* server);
+size_t tls_test_server_leaf_ip_san(
+    const TLS_TEST_SERVER* server, unsigned char* address, size_t address_size);
 
 // Joins both threads and reports whether the CRL was served from memory.
 // Returns 1 if TLS was accepted, 0 if none arrived, or -1 on join failure.

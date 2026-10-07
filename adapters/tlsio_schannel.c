@@ -768,7 +768,8 @@ static void on_underlying_io_bytes_received(void* context, const unsigned char* 
                         }
                     }
                     break;
-                case SEC_E_UNTRUSTED_ROOT: // 0x80090325
+                case SEC_E_WRONG_PRINCIPAL: // 0x80090322
+                case SEC_E_UNTRUSTED_ROOT:  // 0x80090325
                     tls_io_instance->tlsio_state = TLSIO_STATE_ERROR;
                     if (tls_io_instance->on_io_open_complete != NULL)
                     {
