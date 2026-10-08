@@ -15,6 +15,7 @@
 #include "azure_c_shared_utility/xio.h"
 #include "azure_c_shared_utility/singlylinkedlist.h"
 #include "azure_c_shared_utility/socketio.h"
+#include "azure_c_shared_utility/shared_util_options.h"
 #include "azure_c_shared_utility/platform.h"
 #include "azure_c_shared_utility/tlsio.h"
 #include "azure_c_shared_utility/crt_abstractions.h"
@@ -113,7 +114,7 @@ void clear_pending_sends(UWS_CLIENT_INSTANCE* uws_client);
 /* Codes_SRS_UWS_CLIENT_01_360: [ Connection confidentiality and integrity is provided by running the WebSocket Protocol over TLS (wss URIs). ]*/
 /* Codes_SRS_UWS_CLIENT_01_361: [ WebSocket implementations MUST support TLS and SHOULD employ it when communicating with their peers. ]*/
 /* Codes_SRS_UWS_CLIENT_01_063: [ A client will need to supply a /host/, /port/, /resource name/, and a /secure/ flag, which are the components of a WebSocket URI as discussed in Section 3, along with a list of /protocols/ and /extensions/ to be used. ]*/
-UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, const char* resource_name, bool use_ssl, const WS_PROTOCOL* protocols, size_t protocol_count)
+UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, const char* resource_name, bool use_ssl, const WS_PROTOCOL* protocols, size_t protocol_count, bool enable_ipv6)
 {
     UWS_CLIENT_HANDLE result;
 
@@ -202,7 +203,7 @@ UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, con
                             if (use_ssl == true)
                             {
                                 TLSIO_CONFIG tlsio_config;
-                                tlsio_config.enable_ipv6 = 0;
+                                tlsio_config.enable_ipv6 = enable_ipv6 ? 1 : 0;
 
                                 /* Codes_SRS_UWS_CLIENT_01_006: [ If `use_ssl` is true then `uws_client_create` shall obtain the interface used to create a tlsio instance by calling `platform_get_default_tlsio`. ]*/
                                 /* Codes_SRS_UWS_CLIENT_01_076: [ If /secure/ is true, the client MUST perform a TLS handshake over the connection after opening the connection and before sending the handshake data [RFC2818]. ]*/
@@ -223,8 +224,7 @@ UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, con
                                     socketio_config.hostname = hostname;
                                     socketio_config.port = port;
                                     socketio_config.accepted_socket = NULL;
-                                    /* No opt-in plumbed to this path yet; keep the pre-IPv6 IPv4-only lookup. */
-                                    socketio_config.enable_ipv6 = 0;
+                                    socketio_config.enable_ipv6 = enable_ipv6 ? 1 : 0;
 
                                     tlsio_config.hostname = hostname;
                                     tlsio_config.port = port;
@@ -257,8 +257,7 @@ UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, con
                                     socketio_config.hostname = hostname;
                                     socketio_config.port = port;
                                     socketio_config.accepted_socket = NULL;
-                                    /* No opt-in plumbed to this path yet; keep the pre-IPv6 IPv4-only lookup. */
-                                    socketio_config.enable_ipv6 = 0;
+                                    socketio_config.enable_ipv6 = enable_ipv6 ? 1 : 0;
 
                                     /* Codes_SRS_UWS_CLIENT_01_008: [ The obtained interface shall be used to create the IO used as underlying IO by the newly created uws instance. ]*/
                                     /* Codes_SRS_UWS_CLIENT_01_009: [ The underlying IO shall be created by calling `xio_create`. ]*/
@@ -358,7 +357,7 @@ UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, con
     return result;
 }
 
-UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count)
+UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count, bool enable_ipv6)
 {
     UWS_CLIENT_HANDLE result;
 
@@ -447,6 +446,20 @@ UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_i
                         {
                             /* Codes_SRS_UWS_CLIENT_01_521: [ The underlying IO shall be created by calling `xio_create`, while passing as arguments the `io_interface` and `io_create_parameters` argument values. ]*/
                             result->underlying_io = xio_create(io_interface, io_create_parameters);
+                            if (result->underlying_io != NULL && enable_ipv6)
+                            {
+                                int enabled = 1;
+                                if (xio_setoption(result->underlying_io, OPTION_ENABLE_IPV6, &enabled) != 0)
+                                {
+#if (defined(_WIN32) && !defined(SPX_UWP)) || (defined(__linux__) && !defined(__ANDROID__))
+                                    LogError("Underlying IO did not accept IPv6 opt-in");
+                                    xio_destroy(result->underlying_io);
+                                    result->underlying_io = NULL;
+#else
+                                    LogInfo("Underlying IO did not accept IPv6 opt-in; using platform address selection");
+#endif
+                                }
+                            }
                             if (result->underlying_io == NULL)
                             {
                                 /* Codes_SRS_UWS_CLIENT_01_522: [ If `xio_create` fails, then `uws_client_create_with_io` shall fail and return NULL. ]*/
@@ -2446,4 +2459,3 @@ void clear_pending_sends(UWS_CLIENT_INSTANCE* uws_client)
         LogInfo("%s: cancelled frame %p", __FUNCTION__, first_pending_send);
     }
 }
-

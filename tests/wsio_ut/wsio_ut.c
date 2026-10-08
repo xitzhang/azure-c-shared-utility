@@ -357,7 +357,7 @@ TEST_FUNCTION(wsio_create_for_secure_connection_with_valid_args_succeeds)
     CONCRETE_IO_HANDLE wsio;
     
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1));
+    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1, false));
     STRICT_EXPECTED_CALL(singlylinkedlist_create());
 
     // act
@@ -472,7 +472,7 @@ TEST_FUNCTION(when_uws_create_fails_then_wsio_create_fails)
     CONCRETE_IO_HANDLE wsio;
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1))
+    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1, false))
         .SetReturn(NULL);
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
@@ -491,7 +491,7 @@ TEST_FUNCTION(when_singlylinkedlist_create_fails_then_wsio_create_fails)
     CONCRETE_IO_HANDLE wsio;
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1));
+    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, TEST_UNDERLYING_IO_PARAMETERS, TEST_HOST_ADDRESS, 443, TEST_RESOURCE_NAME, IGNORED_PTR_ARG, 1, false));
     STRICT_EXPECTED_CALL(singlylinkedlist_create())
         .SetReturn(NULL);
     STRICT_EXPECTED_CALL(uws_client_destroy(TEST_UWS_HANDLE));
@@ -526,7 +526,7 @@ TEST_FUNCTION(wsio_create_for_secure_connection_with_valid_args_succeeds_2)
     wsio_config.underlying_io_parameters = NULL;
 
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, NULL, "another.com", 80, "haga", IGNORED_PTR_ARG, 1));
+    STRICT_EXPECTED_CALL(uws_client_create_with_io(TEST_UNDERLYING_IO_INTERFACE, NULL, "another.com", 80, "haga", IGNORED_PTR_ARG, 1, false));
     STRICT_EXPECTED_CALL(singlylinkedlist_create());
 
     // act
