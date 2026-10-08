@@ -453,6 +453,11 @@ static int get_network_interface_descriptions(int socket, NETWORK_INTERFACE_DESC
             if (add_network_interface_description(
                 socket, current_interface->if_name, &root_nid, &previous_nid, error_code) != 0)
             {
+                // An unrelated interface can disappear after if_nameindex enumerates it.
+                if (*error_code == ENODEV)
+                {
+                    continue;
+                }
                 result = __FAILURE__;
                 break;
             }

@@ -147,6 +147,7 @@ static pfCloneOption g_retrieved_clone_option;
 static pfDestroyOption g_retrieved_destroy_option;
 #ifndef __APPLE__
 static int g_interface_ioctl_enabled;
+static int g_dual_stack_interface_disappeared;
 static size_t g_interface_address_query_count;
 static size_t g_bind_to_device_count;
 static char g_bound_interface_name[IFNAMSIZ];
@@ -280,6 +281,11 @@ int ioctl(int fd, unsigned long request, ...)
     else if (request != SIOCGIFHWADDR || ifr == NULL)
     {
         errno = EINVAL;
+        result = -1;
+    }
+    else if (g_dual_stack_interface_disappeared && strcmp(ifr->ifr_name, g_dual_stack_interface_name) == 0)
+    {
+        errno = ENODEV;
         result = -1;
     }
     else
@@ -692,6 +698,7 @@ TEST_FUNCTION_INITIALIZE(method_init)
     g_retrieved_destroy_option = NULL;
 #ifndef __APPLE__
     g_interface_ioctl_enabled = 0;
+    g_dual_stack_interface_disappeared = 0;
     g_interface_address_query_count = 0;
     g_bind_to_device_count = 0;
     g_bound_interface_name[0] = '\0';
@@ -1684,6 +1691,28 @@ TEST_FUNCTION(socketio_open_ipv6_interface_binding_finds_an_ipv6_only_interface)
 
     given_candidates(1, families, outcomes);
     g_interface_ioctl_enabled = 1;
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "02:AA:BB:CC:DD:EE"));
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_bind_to_device_count);
+    ASSERT_ARE_EQUAL(char_ptr, g_ipv6_only_interface_name, g_bound_interface_name);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_interface_address_query_count);
+
+    socketio_destroy(ioHandle);
+}
+
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_skips_an_unrelated_disappeared_interface)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+
+    given_candidates(1, families, outcomes);
+    g_interface_ioctl_enabled = 1;
+    g_dual_stack_interface_disappeared = 1;
     ioHandle = create_socket_io(HOSTNAME_ARG, 1);
     ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "02:AA:BB:CC:DD:EE"));
 
