@@ -118,7 +118,6 @@ typedef struct NETWORK_INTERFACE_DESCRIPTION_TAG
 {
     char* name;
     char* mac_address;
-    char* ip_address;
     struct NETWORK_INTERFACE_DESCRIPTION_TAG* next;
 } NETWORK_INTERFACE_DESCRIPTION;
 
@@ -320,16 +319,11 @@ static void destroy_network_interface_descriptions(NETWORK_INTERFACE_DESCRIPTION
             free(nid->mac_address);
         }
 
-        if (nid->ip_address != NULL)
-        {
-            free(nid->ip_address);
-        }
-
         free(nid);
     }
 }
 
-static NETWORK_INTERFACE_DESCRIPTION* create_network_interface_description(struct ifreq *ifr, NETWORK_INTERFACE_DESCRIPTION* previous_nid)
+static NETWORK_INTERFACE_DESCRIPTION* create_network_interface_description(const struct ifreq* ifr, NETWORK_INTERFACE_DESCRIPTION* previous_nid)
 {
     NETWORK_INTERFACE_DESCRIPTION* result;
     size_t malloc_size = 0;
@@ -338,76 +332,95 @@ static NETWORK_INTERFACE_DESCRIPTION* create_network_interface_description(struc
     {
         LogError("Failed allocating NETWORK_INTERFACE_DESCRIPTION");
     }
-    else if ((malloc_size = safe_multiply_size_t(safe_add_size_t(strlen(ifr->ifr_name), 1), sizeof(char))) == SIZE_MAX)
-    {
-        LogError("invalid malloc size");
-        destroy_network_interface_descriptions(result);
-        result = NULL;
-    }
-    else if ((result->name = (char*)malloc(malloc_size)) == NULL)
-    {
-        LogError("failed setting interface description name (malloc failed)");
-        destroy_network_interface_descriptions(result);
-        result = NULL;
-    }
-    else if (strcpy(result->name, ifr->ifr_name) == NULL)
-    {
-        LogError("failed setting interface description name (strcpy failed)");
-        destroy_network_interface_descriptions(result);
-        result = NULL;
-    }
     else
     {
-        char* ip_address;
-        unsigned char* mac = (unsigned char*)ifr->ifr_hwaddr.sa_data;
+        const unsigned char* mac = (const unsigned char*)ifr->ifr_hwaddr.sa_data;
+        result->name = NULL;
+        result->mac_address = NULL;
+        result->next = NULL;
 
-        malloc_size = safe_multiply_size_t(sizeof(char), MAC_ADDRESS_STRING_LENGTH);
-
-        if (malloc_size == SIZE_MAX ||
+        if ((malloc_size = safe_multiply_size_t(safe_add_size_t(strlen(ifr->ifr_name), 1), sizeof(char))) == SIZE_MAX)
+        {
+            LogError("invalid malloc size");
+            destroy_network_interface_descriptions(result);
+            result = NULL;
+        }
+        else if ((result->name = (char*)malloc(malloc_size)) == NULL)
+        {
+            LogError("failed setting interface description name (malloc failed)");
+            destroy_network_interface_descriptions(result);
+            result = NULL;
+        }
+        else if (strcpy(result->name, ifr->ifr_name) == NULL)
+        {
+            LogError("failed setting interface description name (strcpy failed)");
+            destroy_network_interface_descriptions(result);
+            result = NULL;
+        }
+        else if ((malloc_size = safe_multiply_size_t(sizeof(char), MAC_ADDRESS_STRING_LENGTH)) == SIZE_MAX ||
             (result->mac_address = (char*)malloc(malloc_size)) == NULL)
         {
             LogError("failed formatting mac address (malloc failed) size:%zu", malloc_size);
             destroy_network_interface_descriptions(result);
             result = NULL;
         }
-        else if (sprintf(result->mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]) <= 0)
+        else if (sprintf(result->mac_address, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]) <= 0)
         {
             LogError("failed formatting mac address (sprintf failed)");
             destroy_network_interface_descriptions(result);
             result = NULL;
         }
-        else if ((ip_address = inet_ntoa(((struct sockaddr_in*)&ifr->ifr_addr)->sin_addr)) == NULL)
+        else if (previous_nid != NULL)
         {
-            LogError("failed setting the ip address (inet_ntoa failed)");
-            destroy_network_interface_descriptions(result);
-            result = NULL;
+            previous_nid->next = result;
         }
-        else if ((malloc_size = safe_multiply_size_t(safe_add_size_t(strlen(ip_address), 1), sizeof(char))) == SIZE_MAX)
+    }
+
+    return result;
+}
+
+static int add_network_interface_description(
+    int socket,
+    const char* interface_name,
+    NETWORK_INTERFACE_DESCRIPTION** root_nid,
+    NETWORK_INTERFACE_DESCRIPTION** previous_nid,
+    int* error_code)
+{
+    int result;
+    struct ifreq ifr;
+
+    (void)memset(&ifr, 0, sizeof(ifr));
+    if (strlen(interface_name) >= sizeof(ifr.ifr_name))
+    {
+        *error_code = ENAMETOOLONG;
+        LogError("Network interface name is too long");
+        result = __FAILURE__;
+    }
+    else
+    {
+        NETWORK_INTERFACE_DESCRIPTION* new_nid;
+        (void)strcpy(ifr.ifr_name, interface_name);
+
+        if (ioctl(socket, SIOCGIFHWADDR, &ifr) != 0)
         {
-            LogError("invalid malloc size");
-            destroy_network_interface_descriptions(result);
-            result = NULL;
+            *error_code = errno;
+            LogError("ioctl failed querying socket (SIOCGIFHWADDR, errno=%d)", *error_code);
+            result = __FAILURE__;
         }
-        else if ((result->ip_address = (char*)malloc(malloc_size)) == NULL)
+        else if ((new_nid = create_network_interface_description(&ifr, *previous_nid)) == NULL)
         {
-            LogError("failed setting the ip address (malloc failed)");
-            destroy_network_interface_descriptions(result);
-            result = NULL;
-        }
-        else if (strcpy(result->ip_address, ip_address) == NULL)
-        {
-            LogError("failed setting the ip address (strcpy failed)");
-            destroy_network_interface_descriptions(result);
-            result = NULL;
+            *error_code = ENOMEM;
+            LogError("Failed creating network interface description");
+            result = __FAILURE__;
         }
         else
         {
-            result->next = NULL;
-
-            if (previous_nid != NULL)
+            if (*root_nid == NULL)
             {
-                previous_nid->next = result;
+                *root_nid = new_nid;
             }
+            *previous_nid = new_nid;
+            result = 0;
         }
     }
 
@@ -416,78 +429,77 @@ static NETWORK_INTERFACE_DESCRIPTION* create_network_interface_description(struc
 
 static int get_network_interface_descriptions(int socket, NETWORK_INTERFACE_DESCRIPTION** nid, int* error_code)
 {
-    int result;
+    int result = 0;
+    NETWORK_INTERFACE_DESCRIPTION* root_nid = NULL;
+    NETWORK_INTERFACE_DESCRIPTION* previous_nid = NULL;
 
-    struct ifreq ifr;
-    struct ifconf ifc;
-    char buf[IFREQ_BUFFER_SIZE];
+#if defined(__linux__) && !defined(__ANDROID__)
+    struct if_nameindex* interfaces = if_nameindex();
 
-    ifc.ifc_len = sizeof(buf);
-    ifc.ifc_buf = buf;
-
-    if (ioctl(socket, SIOCGIFCONF, &ifc) == -1)
+    if (interfaces == NULL)
     {
-        *error_code = errno;
-        LogError("ioctl failed querying socket (SIOCGIFCONF, errno=%d)", *error_code);
+        *error_code = (errno == 0) ? ENODEV : errno;
+        LogError("if_nameindex failed (errno=%d)", *error_code);
         result = __FAILURE__;
     }
     else
     {
-        NETWORK_INTERFACE_DESCRIPTION* root_nid = NULL;
-        NETWORK_INTERFACE_DESCRIPTION* new_nid = NULL;
+        const struct if_nameindex* current_interface;
 
-        struct ifreq* it = ifc.ifc_req;
-        const struct ifreq* const end = it + (ifc.ifc_len / sizeof(struct ifreq));
-
-        result = 0;
-
-        for (; it != end; ++it)
+        for (current_interface = interfaces;
+            current_interface->if_index != 0 && current_interface->if_name != NULL;
+            current_interface++)
         {
-            strcpy(ifr.ifr_name, it->ifr_name);
-
-            if (ioctl(socket, SIOCGIFFLAGS, &ifr) != 0)
+            if (add_network_interface_description(
+                socket, current_interface->if_name, &root_nid, &previous_nid, error_code) != 0)
             {
-                *error_code = errno;
-                LogError("ioctl failed querying socket (SIOCGIFFLAGS, errno=%d)", *error_code);
                 result = __FAILURE__;
                 break;
-            }
-            else if (ioctl(socket, SIOCGIFHWADDR, &ifr) != 0)
-            {
-                *error_code = errno;
-                LogError("ioctl failed querying socket (SIOCGIFHWADDR, errno=%d)", *error_code);
-                result = __FAILURE__;
-                break;
-            }
-            else if (ioctl(socket, SIOCGIFADDR, &ifr) != 0)
-            {
-                *error_code = errno;
-                LogError("ioctl failed querying socket (SIOCGIFADDR, errno=%d)", *error_code);
-                result = __FAILURE__;
-                break;
-            }
-            else if ((new_nid = create_network_interface_description(&ifr, new_nid)) == NULL)
-            {
-                *error_code = ENOMEM;
-                LogError("Failed creating network interface description");
-                result = __FAILURE__;
-                break;
-            }
-            else if (root_nid == NULL)
-            {
-                root_nid = new_nid;
             }
         }
 
-        if (result == 0)
+        if_freenameindex(interfaces);
+    }
+#else
+    {
+        struct ifconf ifc;
+        char buf[IFREQ_BUFFER_SIZE];
+
+        ifc.ifc_len = sizeof(buf);
+        ifc.ifc_buf = buf;
+
+        if (ioctl(socket, SIOCGIFCONF, &ifc) == -1)
         {
-            *nid = root_nid;
-            *error_code = 0;
+            *error_code = errno;
+            LogError("ioctl failed querying socket (SIOCGIFCONF, errno=%d)", *error_code);
+            result = __FAILURE__;
         }
         else
         {
-            destroy_network_interface_descriptions(root_nid);
+            struct ifreq* current_interface = ifc.ifc_req;
+            const struct ifreq* const end = current_interface + (ifc.ifc_len / sizeof(struct ifreq));
+
+            for (; current_interface != end; current_interface++)
+            {
+                if (add_network_interface_description(
+                    socket, current_interface->ifr_name, &root_nid, &previous_nid, error_code) != 0)
+                {
+                    result = __FAILURE__;
+                    break;
+                }
+            }
         }
+    }
+#endif
+
+    if (result == 0)
+    {
+        *nid = root_nid;
+        *error_code = 0;
+    }
+    else
+    {
+        destroy_network_interface_descriptions(root_nid);
     }
 
     return result;
@@ -499,8 +511,8 @@ static int set_target_network_interface(int target_socket, char* mac_address, in
     int enumeration_socket;
     NETWORK_INTERFACE_DESCRIPTION* nid;
 
-    // SIOCGIFCONF only works on an AF_INET socket, and the connect socket may now
-    // be AF_INET6, so enumerate on a throwaway IPv4 socket instead.
+    // Interface names are address-family independent; the temporary socket is
+    // used only to query each interface's hardware address.
     enumeration_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (enumeration_socket < SOCKET_SUCCESS)
     {

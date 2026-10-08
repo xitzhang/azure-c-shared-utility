@@ -37,12 +37,15 @@
 #endif
 
 #include <errno.h>
+#include <stdarg.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <time.h>
@@ -142,6 +145,12 @@ static int g_last_addrinfo_flags;
 static int g_retrieved_enable_ipv6;
 static pfCloneOption g_retrieved_clone_option;
 static pfDestroyOption g_retrieved_destroy_option;
+#ifndef __APPLE__
+static int g_interface_ioctl_enabled;
+static size_t g_interface_address_query_count;
+static size_t g_bind_to_device_count;
+static char g_bound_interface_name[IFNAMSIZ];
+#endif
 
 static IO_OPEN_RESULT_DETAILED g_open_result;
 static size_t g_open_complete_count;
@@ -222,6 +231,88 @@ static bool singlylinkedlist_add_called = false;
 
 static TEST_MUTEX_HANDLE g_testByTest;
 static TEST_MUTEX_HANDLE g_dllByDll;
+
+#ifndef __APPLE__
+static char g_dual_stack_interface_name[] = "dual0";
+static char g_ipv6_only_interface_name[] = "v6only0";
+static struct if_nameindex g_test_interfaces[] =
+{
+    { 1, g_dual_stack_interface_name },
+    { 2, g_ipv6_only_interface_name },
+    { 0, NULL }
+};
+
+struct if_nameindex* if_nameindex(void)
+{
+    return g_test_interfaces;
+}
+
+void if_freenameindex(struct if_nameindex* interfaces)
+{
+    (void)interfaces;
+}
+
+int ioctl(int fd, unsigned long request, ...)
+{
+    int result;
+    struct ifreq* ifr = NULL;
+    va_list args;
+    (void)fd;
+
+    if (request == SIOCGIFADDR || request == SIOCGIFHWADDR)
+    {
+        va_start(args, request);
+        ifr = va_arg(args, struct ifreq*);
+        va_end(args);
+    }
+
+    if (!g_interface_ioctl_enabled)
+    {
+        errno = ENOTTY;
+        result = -1;
+    }
+    else if (request == SIOCGIFADDR)
+    {
+        g_interface_address_query_count++;
+        errno = EADDRNOTAVAIL;
+        result = -1;
+    }
+    else if (request != SIOCGIFHWADDR || ifr == NULL)
+    {
+        errno = EINVAL;
+        result = -1;
+    }
+    else
+    {
+        static const unsigned char dual_stack_mac[] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
+        static const unsigned char ipv6_only_mac[] = { 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE };
+        const unsigned char* mac = NULL;
+
+        if (strcmp(ifr->ifr_name, g_dual_stack_interface_name) == 0)
+        {
+            mac = dual_stack_mac;
+        }
+        else if (strcmp(ifr->ifr_name, g_ipv6_only_interface_name) == 0)
+        {
+            mac = ipv6_only_mac;
+        }
+
+        if (mac == NULL)
+        {
+            errno = ENODEV;
+            result = -1;
+        }
+        else
+        {
+            (void)memset(&ifr->ifr_hwaddr, 0, sizeof(ifr->ifr_hwaddr));
+            (void)memcpy(ifr->ifr_hwaddr.sa_data, mac, 6);
+            result = 0;
+        }
+    }
+
+    return result;
+}
+#endif
 
 static ATTEMPT_OUTCOME current_attempt_outcome(void)
 {
@@ -321,6 +412,15 @@ if ((level == IPPROTO_IPV6) && (optname == IPV6_V6ONLY) && (optval != NULL))
     g_v6only_cleared_count++;
     g_v6only_last_value = *(const int*)optval;
 }
+#ifndef __APPLE__
+else if ((level == SOL_SOCKET) && (optname == SO_BINDTODEVICE) && (optval != NULL))
+{
+    size_t name_length = (optlen < sizeof(g_bound_interface_name) - 1) ? optlen : sizeof(g_bound_interface_name) - 1;
+    (void)memcpy(g_bound_interface_name, optval, name_length);
+    g_bound_interface_name[name_length] = '\0';
+    g_bind_to_device_count++;
+}
+#endif
 MOCK_FUNCTION_END(0)
 
 MOCK_FUNCTION_WITH_CODE(, int, getaddrinfo, const char*, node, const char*, service, const struct addrinfo*, hints, struct addrinfo**, res)
@@ -590,6 +690,12 @@ TEST_FUNCTION_INITIALIZE(method_init)
     g_retrieved_enable_ipv6 = -1;
     g_retrieved_clone_option = NULL;
     g_retrieved_destroy_option = NULL;
+#ifndef __APPLE__
+    g_interface_ioctl_enabled = 0;
+    g_interface_address_query_count = 0;
+    g_bind_to_device_count = 0;
+    g_bound_interface_name[0] = '\0';
+#endif
     list_item_count = 0;
     singlylinkedlist_add_called = false;
     g_open_result.result = IO_OPEN_CANCELLED;
@@ -1514,10 +1620,9 @@ TEST_FUNCTION(socketio_open_with_only_invalid_resolved_addresses_fails_without_a
 }
 
 #ifndef __APPLE__
-/* SIOCGIFCONF only works on an AF_INET socket, so binding an AF_INET6 connect
-   socket to an interface enumerates on a temporary AF_INET datagram socket -
-   which must be released whatever the enumeration's outcome. */
-TEST_FUNCTION(socketio_open_ipv6_interface_binding_enumerates_on_a_temporary_ipv4_socket)
+/* Interface enumeration failures retain their platform error and release both
+   the connect socket and temporary hardware-query socket. */
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_releases_the_enumeration_socket_on_failure)
 {
     const int families[] = { AF_INET6 };
     const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
@@ -1542,6 +1647,75 @@ TEST_FUNCTION(socketio_open_ipv6_interface_binding_enumerates_on_a_temporary_ipv
     ASSERT_ARE_EQUAL(int, SOCK_DGRAM, g_socket_types[1]);
     // Both the connect socket and the enumeration socket were released.
     ASSERT_ARE_EQUAL(size_t, fds_before, open_fd_count());
+
+    socketio_destroy(ioHandle);
+}
+
+/* A queried hardware MAC selects a dual-addressed interface without using its
+   IPv4 sockaddr bytes. */
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_uses_the_dual_stack_interface_hardware_mac)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+
+    given_candidates(1, families, outcomes);
+    g_interface_ioctl_enabled = 1;
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "02:11:22:33:44:55"));
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_bind_to_device_count);
+    ASSERT_ARE_EQUAL(char_ptr, g_dual_stack_interface_name, g_bound_interface_name);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_interface_address_query_count);
+
+    socketio_destroy(ioHandle);
+}
+
+/* An interface with no IPv4 address remains selectable because enumeration
+   does not request SIOCGIFADDR. */
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_finds_an_ipv6_only_interface)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+
+    given_candidates(1, families, outcomes);
+    g_interface_ioctl_enabled = 1;
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "02:AA:BB:CC:DD:EE"));
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(int, IO_OPEN_OK, g_open_result.result);
+    ASSERT_ARE_EQUAL(size_t, (size_t)1, g_bind_to_device_count);
+    ASSERT_ARE_EQUAL(char_ptr, g_ipv6_only_interface_name, g_bound_interface_name);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_interface_address_query_count);
+
+    socketio_destroy(ioHandle);
+}
+
+/* IPv4 sockaddr bytes that matched the old overwritten ifreq must not select
+   either interface. */
+TEST_FUNCTION(socketio_open_ipv6_interface_binding_rejects_overwritten_sockaddr_bytes)
+{
+    const int families[] = { AF_INET6 };
+    const ATTEMPT_OUTCOME outcomes[] = { ATTEMPT_SUCCEEDS };
+    CONCRETE_IO_HANDLE ioHandle;
+
+    given_candidates(1, families, outcomes);
+    g_interface_ioctl_enabled = 1;
+    ioHandle = create_socket_io(HOSTNAME_ARG, 1);
+    ASSERT_ARE_EQUAL(int, 0, socketio_setoption(ioHandle, OPTION_NET_INT_MAC_ADDRESS, "00:00:C0:00:02:02"));
+
+    ASSERT_ARE_EQUAL(int, 0, socketio_open(ioHandle, test_on_io_open_complete, NULL, test_on_bytes_received, NULL, test_on_io_error, NULL));
+
+    ASSERT_ARE_EQUAL(int, IO_OPEN_ERROR, g_open_result.result);
+    ASSERT_ARE_EQUAL(int, ENODEV, g_open_result.code);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_bind_to_device_count);
+    ASSERT_ARE_EQUAL(size_t, (size_t)0, g_interface_address_query_count);
 
     socketio_destroy(ioHandle);
 }
