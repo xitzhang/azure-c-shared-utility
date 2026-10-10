@@ -129,10 +129,10 @@ XX**SRS_UWS_CLIENT_01_018: [** If `singlylinkedlist_create` fails then `uws_clie
 ### uws_client_create_with_io
 
 ```c
-UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count, bool enable_ipv6)
+UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count)
 ```
 
-`enable_ipv6` configures the supplied IO before it opens. On desktop Windows and Linux, creation fails if that IO rejects IPv6 opt-in; on platforms with independent address selection, creation can proceed.
+The caller configures the supplied IO when creating it. For proxy IO, `HTTP_PROXY_IO_CONFIG.enable_ipv6` controls the socket created for the proxy connection.
 
 XX**SRS_UWS_CLIENT_01_515: [** `uws_client_create_with_io` shall create an instance of uws and return a non-NULL handle to it. **]**  
 XX**SRS_UWS_CLIENT_01_516: [** If any of the arguments `io_interface`, `hostname` and `resource_name` is NULL then `uws_client_create_with_io` shall return NULL. **]**  

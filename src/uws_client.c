@@ -357,7 +357,7 @@ UWS_CLIENT_HANDLE uws_client_create(const char* hostname, unsigned int port, con
     return result;
 }
 
-UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count, bool enable_ipv6)
+UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_interface, void* io_create_parameters, const char* hostname, unsigned int port, const char* resource_name, const WS_PROTOCOL* protocols, size_t protocol_count)
 {
     UWS_CLIENT_HANDLE result;
 
@@ -446,20 +446,6 @@ UWS_CLIENT_HANDLE uws_client_create_with_io(const IO_INTERFACE_DESCRIPTION* io_i
                         {
                             /* Codes_SRS_UWS_CLIENT_01_521: [ The underlying IO shall be created by calling `xio_create`, while passing as arguments the `io_interface` and `io_create_parameters` argument values. ]*/
                             result->underlying_io = xio_create(io_interface, io_create_parameters);
-                            if (result->underlying_io != NULL && enable_ipv6)
-                            {
-                                int enabled = 1;
-                                if (xio_setoption(result->underlying_io, OPTION_ENABLE_IPV6, &enabled) != 0)
-                                {
-#if (defined(_WIN32) && !defined(SPX_UWP)) || (defined(__linux__) && !defined(__ANDROID__))
-                                    LogError("Underlying IO did not accept IPv6 opt-in");
-                                    xio_destroy(result->underlying_io);
-                                    result->underlying_io = NULL;
-#else
-                                    LogInfo("Underlying IO did not accept IPv6 opt-in; using platform address selection");
-#endif
-                                }
-                            }
                             if (result->underlying_io == NULL)
                             {
                                 /* Codes_SRS_UWS_CLIENT_01_522: [ If `xio_create` fails, then `uws_client_create_with_io` shall fail and return NULL. ]*/

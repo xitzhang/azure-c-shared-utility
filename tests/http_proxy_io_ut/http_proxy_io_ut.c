@@ -150,10 +150,11 @@ static char* umocktypes_stringify_const_SOCKETIO_CONFIG_ptr(const SOCKETIO_CONFI
     char* result = NULL;
     char temp_buffer[1024];
     int length;
-    length = sprintf(temp_buffer, "{ hostname = %s, port = %d, accepted_socket = %p }",
+    length = sprintf(temp_buffer, "{ hostname = %s, port = %d, accepted_socket = %p, enable_ipv6 = %d }",
         (*value)->hostname,
         (*value)->port,
-        (*value)->accepted_socket);
+        (*value)->accepted_socket,
+        (*value)->enable_ipv6);
 
     if (length > 0)
     {
@@ -180,6 +181,7 @@ static int umocktypes_are_equal_const_SOCKETIO_CONFIG_ptr(const SOCKETIO_CONFIG*
     {
         result = (*left)->port == (*right)->port;
         result = result && ((*left)->accepted_socket == (*right)->accepted_socket);
+        result = result && ((*left)->enable_ipv6 == (*right)->enable_ipv6);
         if ((*right)->hostname == NULL)
         {
             result = result && ((*left)->hostname == (*right)->hostname);
@@ -320,7 +322,8 @@ static const HTTP_PROXY_IO_CONFIG default_http_proxy_io_config = {
     "a_proxy",
     4444,
     "test_user",
-    "shhhh"
+    "shhhh",
+    0
 };
 
 static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_no_username = {
@@ -329,7 +332,8 @@ static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_no_username = {
     "a_proxy",
     4444,
     NULL,
-    NULL
+    NULL,
+    0
     };
 
 static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_with_username = {
@@ -338,7 +342,8 @@ static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_with_username = {
     "another_proxy",
     8888,
     "le_user",
-    "le_password"
+    "le_password",
+    0
     };
 
 static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_with_username_cased = {
@@ -347,14 +352,16 @@ static const HTTP_PROXY_IO_CONFIG http_proxy_io_config_with_username_cased = {
     "another_proxy",
     8888,
     "lE_uSeR",
-    "lE_pAsSwOrD"
+    "lE_pAsSwOrD",
+    0
     };
 
 static const SOCKETIO_CONFIG socketio_config =
 {
     "a_proxy",
     4444,
-    NULL
+    NULL,
+    0
 };
 
 #ifdef __cplusplus
@@ -467,7 +474,7 @@ TEST_FUNCTION(io_open_result_detailed_nonzero_code_sentinel_requires_a_nonzero_a
 TEST_FUNCTION(http_proxy_io_create_succeeds)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = "test_host";
@@ -488,6 +495,7 @@ TEST_FUNCTION(http_proxy_io_create_succeeds)
         .IgnoreArgument_destination();
     STRICT_EXPECTED_CALL(socketio_get_interface_description());
     STRICT_EXPECTED_CALL(xio_create(TEST_SOCKETIO_INTERFACE_DESCRIPTION, &socketio_config))
+        .IgnoreArgument_io_create_parameters()
         .ValidateArgumentValue_io_create_parameters_AsType(UMOCK_TYPE(SOCKETIO_CONFIG*));
 
     // act
@@ -501,11 +509,34 @@ TEST_FUNCTION(http_proxy_io_create_succeeds)
     http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
 }
 
+TEST_FUNCTION(http_proxy_io_create_passes_ipv6_to_proxy_socket)
+{
+    const HTTP_PROXY_IO_CONFIG proxy_config = { "test_host", 443, "a_proxy", 4444, "test_user", "shhhh", 1 };
+    const SOCKETIO_CONFIG expected_socket_config = { "a_proxy", 4444, NULL, 1 };
+    CONCRETE_IO_HANDLE http_io;
+
+    EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG));
+    STRICT_EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_PTR_ARG, "test_host")).IgnoreArgument_destination();
+    STRICT_EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_PTR_ARG, "a_proxy")).IgnoreArgument_destination();
+    STRICT_EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_PTR_ARG, "test_user")).IgnoreArgument_destination();
+    STRICT_EXPECTED_CALL(mallocAndStrcpy_s(IGNORED_PTR_ARG, "shhhh")).IgnoreArgument_destination();
+    STRICT_EXPECTED_CALL(socketio_get_interface_description());
+    STRICT_EXPECTED_CALL(xio_create(TEST_SOCKETIO_INTERFACE_DESCRIPTION, &expected_socket_config))
+        .IgnoreArgument_io_create_parameters()
+        .ValidateArgumentValue_io_create_parameters_AsType(UMOCK_TYPE(SOCKETIO_CONFIG*));
+
+    http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&proxy_config);
+
+    ASSERT_IS_NOT_NULL(http_io);
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+    http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
+}
+
 /* Tests_SRS_HTTP_PROXY_IO_01_094: [ `username` and `password` shall be optional. ]*/
 TEST_FUNCTION(http_proxy_io_create_with_NULL_username_and_password_succeeds)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = "test_host";
@@ -522,6 +553,7 @@ TEST_FUNCTION(http_proxy_io_create_with_NULL_username_and_password_succeeds)
         .IgnoreArgument_destination();
     STRICT_EXPECTED_CALL(socketio_get_interface_description());
     STRICT_EXPECTED_CALL(xio_create(TEST_SOCKETIO_INTERFACE_DESCRIPTION, &socketio_config))
+        .IgnoreArgument_io_create_parameters()
         .ValidateArgumentValue_io_create_parameters_AsType(UMOCK_TYPE(SOCKETIO_CONFIG*));
 
     // act
@@ -539,7 +571,7 @@ TEST_FUNCTION(http_proxy_io_create_with_NULL_username_and_password_succeeds)
 TEST_FUNCTION(http_proxy_io_create_with_NULL_username_and_non_NULL_password_fails)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = "test_host";
@@ -561,7 +593,7 @@ TEST_FUNCTION(http_proxy_io_create_with_NULL_username_and_non_NULL_password_fail
 TEST_FUNCTION(http_proxy_io_create_with_non_NULL_username_and_NULL_password_fails)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = "test_host";
@@ -597,7 +629,7 @@ TEST_FUNCTION(http_proxy_io_create_with_NULL_fails)
 TEST_FUNCTION(http_proxy_io_create_with_NULL_hostname_fails)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = NULL;
@@ -619,7 +651,7 @@ TEST_FUNCTION(http_proxy_io_create_with_NULL_hostname_fails)
 TEST_FUNCTION(http_proxy_io_create_with_NULL_proxy_hostname_fails)
 {
     // arrange
-    HTTP_PROXY_IO_CONFIG http_proxy_io_config;
+    HTTP_PROXY_IO_CONFIG http_proxy_io_config = { 0 };
     CONCRETE_IO_HANDLE http_io;
 
     http_proxy_io_config.hostname = "a_hostname";
@@ -1615,54 +1647,6 @@ TEST_FUNCTION(when_the_underlying_xio_setoption_fails_http_proxy_io_set_option_a
 }
 
 /* Tests_SRS_HTTP_PROXY_IO_01_043: [ If the `option_name` argument indicates an option that is not handled by `http_proxy_io_set_option`, then `xio_setoption` shall be called on the underlying IO created in `http_proxy_io_create`, passing the option name and value to it. ]*/
-TEST_FUNCTION(http_proxy_io_set_option_passes_enable_ipv6_to_the_underlying_io)
-{
-    // arrange
-    CONCRETE_IO_HANDLE http_io;
-    int enable_ipv6 = 1;
-    int result;
-
-    http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    umock_c_reset_all_calls();
-
-    STRICT_EXPECTED_CALL(xio_setoption(TEST_IO_HANDLE, OPTION_ENABLE_IPV6, &enable_ipv6));
-
-    // act
-    result = http_proxy_io_get_interface_description()->concrete_io_setoption(http_io, OPTION_ENABLE_IPV6, &enable_ipv6);
-
-    // assert
-    ASSERT_ARE_EQUAL(int, 0, result);
-    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
-
-    // cleanup
-    http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
-}
-
-/* Tests_SRS_HTTP_PROXY_IO_01_044: [ if `xio_setoption` fails, `http_proxy_io_set_option` shall return a non-zero value. ]*/
-TEST_FUNCTION(when_the_underlying_io_rejects_enable_ipv6_http_proxy_io_set_option_fails)
-{
-    // arrange
-    CONCRETE_IO_HANDLE http_io;
-    int enable_ipv6 = 1;
-    int result;
-
-    http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&default_http_proxy_io_config);
-    umock_c_reset_all_calls();
-
-    STRICT_EXPECTED_CALL(xio_setoption(TEST_IO_HANDLE, OPTION_ENABLE_IPV6, &enable_ipv6))
-        .SetReturn(1);
-
-    // act
-    result = http_proxy_io_get_interface_description()->concrete_io_setoption(http_io, OPTION_ENABLE_IPV6, &enable_ipv6);
-
-    // assert
-    ASSERT_ARE_NOT_EQUAL(int, 0, result);
-    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
-
-    // cleanup
-    http_proxy_io_get_interface_description()->concrete_io_destroy(http_io);
-}
-
 /* Tests_SRS_HTTP_PROXY_IO_01_056: [ The `value` argument shall be allowed to be NULL. ]*/
 TEST_FUNCTION(http_proxy_io_set_option_with_NULL_value_is_allowed)
 {
@@ -1825,7 +1809,7 @@ TEST_FUNCTION(when_the_underlying_io_open_complete_is_called_the_CONNECT_request
 TEST_FUNCTION(when_the_target_is_a_DNS_hostname_the_CONNECT_request_remains_unchanged)
 {
     // arrange
-    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "www.example.com", 443, "a_proxy", 4444, NULL, NULL };
+    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "www.example.com", 443, "a_proxy", 4444, NULL, NULL, 0 };
     const char connect_request[] = "CONNECT www.example.com:443 HTTP/1.1\r\nHost:www.example.com:443\r\n\r\n";
     CONCRETE_IO_HANDLE http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config);
     (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
@@ -1849,7 +1833,7 @@ TEST_FUNCTION(when_the_target_is_a_DNS_hostname_the_CONNECT_request_remains_unch
 TEST_FUNCTION(when_the_target_is_an_IPv6_address_the_CONNECT_request_uses_bracketed_authorities)
 {
     // arrange
-    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "2001:db8::1", 443, "a_proxy", 4444, NULL, NULL };
+    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "2001:db8::1", 443, "a_proxy", 4444, NULL, NULL, 0 };
     const char connect_request[] = "CONNECT [2001:db8::1]:443 HTTP/1.1\r\nHost:[2001:db8::1]:443\r\n\r\n";
     CONCRETE_IO_HANDLE http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config);
     (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
@@ -1875,7 +1859,7 @@ TEST_FUNCTION(when_the_target_is_an_IPv6_address_the_CONNECT_request_uses_bracke
 TEST_FUNCTION(when_the_target_is_a_scoped_IPv6_address_the_CONNECT_request_omits_the_zone)
 {
     // arrange
-    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "fe80::1%12", 443, "a_proxy", 4444, NULL, NULL };
+    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "fe80::1%12", 443, "a_proxy", 4444, NULL, NULL, 0 };
     const char connect_request[] = "CONNECT [fe80::1]:443 HTTP/1.1\r\nHost:[fe80::1]:443\r\n\r\n";
     CONCRETE_IO_HANDLE http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config);
     (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);
@@ -1899,7 +1883,7 @@ TEST_FUNCTION(when_the_target_is_a_scoped_IPv6_address_the_CONNECT_request_omits
 TEST_FUNCTION(when_a_scoped_IPv6_target_has_a_reserved_zone_byte_the_CONNECT_request_omits_the_zone)
 {
     // arrange
-    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "fe80::1%Ethernet 2", 443, "a_proxy", 4444, NULL, NULL };
+    const HTTP_PROXY_IO_CONFIG http_proxy_io_config = { "fe80::1%Ethernet 2", 443, "a_proxy", 4444, NULL, NULL, 0 };
     const char connect_request[] = "CONNECT [fe80::1]:443 HTTP/1.1\r\nHost:[fe80::1]:443\r\n\r\n";
     CONCRETE_IO_HANDLE http_io = http_proxy_io_get_interface_description()->concrete_io_create((void*)&http_proxy_io_config);
     (void)http_proxy_io_get_interface_description()->concrete_io_open(http_io, test_on_io_open_complete, (void*)0x4242, test_on_bytes_received, (void*)0x4243, test_on_io_error, (void*)0x4244);

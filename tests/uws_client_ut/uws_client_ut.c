@@ -488,9 +488,6 @@ static const IO_INTERFACE_DESCRIPTION* TEST_TLS_IO_INTERFACE_DESCRIPTION = (cons
 static bool capture_ipv6_config;
 static int captured_socket_ipv6;
 static int captured_tls_ipv6;
-static int captured_option_ipv6;
-static int xio_setoption_result;
-static int destroyed_xio_count;
 
 static XIO_HANDLE my_xio_create(const IO_INTERFACE_DESCRIPTION* interface_description, const void* parameters)
 {
@@ -508,24 +505,6 @@ static XIO_HANDLE my_xio_create(const IO_INTERFACE_DESCRIPTION* interface_descri
         }
     }
     return TEST_IO_HANDLE;
-}
-
-static int my_xio_setoption(XIO_HANDLE handle, const char* name, const void* value)
-{
-    (void)handle;
-    if (strcmp(name, OPTION_ENABLE_IPV6) == 0)
-    {
-        captured_option_ipv6 = *(const int*)value;
-    }
-    return xio_setoption_result;
-}
-
-static void my_xio_destroy(XIO_HANDLE handle)
-{
-    if (handle == TEST_IO_HANDLE)
-    {
-        destroyed_xio_count++;
-    }
 }
 
 #ifdef __cplusplus
@@ -594,8 +573,6 @@ TEST_SUITE_INITIALIZE(suite_init)
     REGISTER_GLOBAL_MOCK_RETURN(socketio_get_interface_description, TEST_SOCKET_IO_INTERFACE_DESCRIPTION);
     REGISTER_GLOBAL_MOCK_RETURN(platform_get_default_tlsio, TEST_TLS_IO_INTERFACE_DESCRIPTION);
     REGISTER_GLOBAL_MOCK_HOOK(xio_create, my_xio_create);
-    REGISTER_GLOBAL_MOCK_HOOK(xio_setoption, my_xio_setoption);
-    REGISTER_GLOBAL_MOCK_HOOK(xio_destroy, my_xio_destroy);
     REGISTER_GLOBAL_MOCK_RETURN(xio_retrieveoptions, TEST_IO_OPTIONHANDLER_HANDLE);
     REGISTER_GLOBAL_MOCK_RETURN(utf8_checker_is_valid_utf8, true);
     REGISTER_GLOBAL_MOCK_RETURN(Base64_Encode_Bytes, BASE64_ENCODED_STRING);
@@ -673,9 +650,6 @@ TEST_FUNCTION_INITIALIZE(method_init)
     capture_ipv6_config = false;
     captured_socket_ipv6 = -1;
     captured_tls_ipv6 = -1;
-    captured_option_ipv6 = -1;
-    xio_setoption_result = 0;
-    destroyed_xio_count = 0;
 
     memset(my_Map_GetInternals_keys, 0, sizeof(my_Map_GetInternals_keys));
     memset(my_Map_GetInternals_values, 0, sizeof(my_Map_GetInternals_values));
@@ -1361,7 +1335,7 @@ TEST_FUNCTION(uws_client_create_with_io_valid_args_succeeds)
         .IgnoreArgument_destination();
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]), false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]));
 
     // assert
     ASSERT_IS_NOT_NULL(uws_client);
@@ -1370,29 +1344,6 @@ TEST_FUNCTION(uws_client_create_with_io_valid_args_succeeds)
     // cleanup
     uws_client_destroy(uws_client);
 }
-
-TEST_FUNCTION(uws_client_create_with_io_ipv6_opt_in_reaches_underlying_io)
-{
-    UWS_CLIENT_HANDLE client = uws_client_create_with_io(
-        TEST_SOCKET_IO_INTERFACE_DESCRIPTION, NULL, "::1", 80, "/", NULL, 0, true);
-
-    ASSERT_IS_NOT_NULL(client);
-    ASSERT_ARE_EQUAL(int, 1, captured_option_ipv6);
-    uws_client_destroy(client);
-}
-
-#if (defined(_WIN32) && !defined(SPX_UWP)) || (defined(__linux__) && !defined(__ANDROID__))
-TEST_FUNCTION(uws_client_create_with_io_rejects_unsupported_ipv6_option)
-{
-    xio_setoption_result = 1;
-    UWS_CLIENT_HANDLE client = uws_client_create_with_io(
-        TEST_SOCKET_IO_INTERFACE_DESCRIPTION, NULL, "::1", 80, "/", NULL, 0, true);
-
-    ASSERT_IS_NULL(client);
-    ASSERT_ARE_EQUAL(int, 1, captured_option_ipv6);
-    ASSERT_ARE_EQUAL(int, 1, destroyed_xio_count);
-}
-#endif
 
 /* Tests_SRS_UWS_CLIENT_01_516: [ If any of the arguments `io_interface`, `hostname` and `resource_name` is NULL then `uws_client_create_with_io` shall return NULL. ]*/
 TEST_FUNCTION(uws_client_create_with_io_with_NULL_io_interface_description_fails)
@@ -1406,7 +1357,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_NULL_io_interface_description_fails
     socketio_config.port = 1122;
 
     // act
-    uws_client = uws_client_create_with_io(NULL, &socketio_config, "test_host", 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]), false);
+    uws_client = uws_client_create_with_io(NULL, &socketio_config, "test_host", 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]));
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -1425,7 +1376,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_NULL_hostname_fails)
     socketio_config.port = 1122;
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, NULL, 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]), false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, NULL, 80, "111", protocols, sizeof(protocols) / sizeof(protocols[0]));
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -1444,7 +1395,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_NULL_resource_name_fails)
     socketio_config.port = 1122;
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, NULL, protocols, sizeof(protocols) / sizeof(protocols[0]), false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, NULL, protocols, sizeof(protocols) / sizeof(protocols[0]));
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -1507,7 +1458,7 @@ TEST_FUNCTION(when_any_call_fails_uws_client_create_with_io_fails)
         (void)sprintf(temp_str, "On failed call %zu", i);
 
         // act
-        uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", two_protocols, sizeof(two_protocols) / sizeof(two_protocols[0]), false);
+        uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", two_protocols, sizeof(two_protocols) / sizeof(two_protocols[0]));
 
         // assert
         ASSERT_IS_NULL_WITH_MSG(uws_client, temp_str);
@@ -1536,7 +1487,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_NULL_protocols_succeeds)
         .IgnoreArgument_io_create_parameters();
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", NULL, 0, false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", NULL, 0);
 
     // assert
     ASSERT_IS_NOT_NULL(uws_client);
@@ -1558,7 +1509,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_NULL_protocols_and_non_zero_protoco
     socketio_config.port = 80;
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", NULL, 1, false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "111", NULL, 1);
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -1578,7 +1529,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_a_NULL_protocol_name_for_first_prot
     socketio_config.port = 444;
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "test_resource/23", NULL_test_protocol, sizeof(NULL_test_protocol) / sizeof(NULL_test_protocol[0]), false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "test_resource/23", NULL_test_protocol, sizeof(NULL_test_protocol) / sizeof(NULL_test_protocol[0]));
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -1598,7 +1549,7 @@ TEST_FUNCTION(uws_client_create_with_io_with_a_NULL_protocol_name_for_second_pro
     socketio_config.port = 444;
 
     // act
-    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "test_resource/23", NULL_test_protocol, sizeof(NULL_test_protocol) / sizeof(NULL_test_protocol[0]), false);
+    uws_client = uws_client_create_with_io(TEST_SOCKET_IO_INTERFACE_DESCRIPTION, &socketio_config, "test_host", 80, "test_resource/23", NULL_test_protocol, sizeof(NULL_test_protocol) / sizeof(NULL_test_protocol[0]));
 
     // assert
     ASSERT_IS_NULL(uws_client);
@@ -7299,32 +7250,6 @@ TEST_FUNCTION(when_xio_setoption_fails_then_uws_set_option_fails)
 
     // assert
     ASSERT_ARE_NOT_EQUAL(int, 0, result);
-    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
-
-    // cleanup
-    uws_client_destroy(uws_client);
-}
-
-/* Tests_SRS_UWS_CLIENT_01_441: [ Otherwise all options shall be passed as they are to the underlying IO by calling `xio_setoption`. ]*/
-/* The IPv6 opt-in reaches the socket of a TLS or proxied WebSocket only through this pass-through,
-   so it must be handed to the underlying IO unchanged rather than handled or dropped here. */
-TEST_FUNCTION(uws_set_option_passes_the_ipv6_opt_in_down_to_the_underlying_io)
-{
-    // arrange
-    UWS_CLIENT_HANDLE uws_client;
-    int enable_ipv6 = 1;
-    int result;
-
-    uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]), false);
-    umock_c_reset_all_calls();
-
-    STRICT_EXPECTED_CALL(xio_setoption(TEST_IO_HANDLE, OPTION_ENABLE_IPV6, &enable_ipv6));
-
-    // act
-    result = uws_client_set_option(uws_client, OPTION_ENABLE_IPV6, &enable_ipv6);
-
-    // assert
-    ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
     // cleanup

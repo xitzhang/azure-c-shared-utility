@@ -249,7 +249,7 @@ CONCRETE_IO_HANDLE wsio_create(void* io_create_parameters)
             /* Codes_SRS_WSIO_01_130: [ - `port` set to the `port` field in the `io_create_parameters` passed to `wsio_create`. ]*/
             /* Codes_SRS_WSIO_01_128: [ - `resource_name` set to the `resource_name` field in the `io_create_parameters` passed to `wsio_create`. ]*/
             /* Codes_SRS_WSIO_01_129: [ - `protocols` shall be filled with only one structure, that shall have the `protocol` set to the value of the `protocol` field in the `io_create_parameters` passed to `wsio_create`. ]*/
-            result->uws = uws_client_create_with_io(ws_io_config->underlying_io_interface, ws_io_config->underlying_io_parameters, ws_io_config->hostname, ws_io_config->port, ws_io_config->resource_name, &protocols, 1, false);
+            result->uws = uws_client_create_with_io(ws_io_config->underlying_io_interface, ws_io_config->underlying_io_parameters, ws_io_config->hostname, ws_io_config->port, ws_io_config->resource_name, &protocols, 1);
             if (result->uws == NULL)
             {
                 /* Codes_SRS_WSIO_01_075: [ If `uws_client_create_with_io` fails, then `wsio_create` shall fail and return NULL. ]*/
