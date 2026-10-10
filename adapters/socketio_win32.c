@@ -66,18 +66,6 @@ static void* socketio_CloneOption(const char* name, const void* value)
     {
         LogError("Failed cloning option (name or value is NULL)");
     }
-    else if (strcmp(name, OPTION_ENABLE_IPV6) == 0)
-    {
-        result = malloc(sizeof(int));
-        if (result == NULL)
-        {
-            LogError("Failed cloning option %s (malloc failed)", name);
-        }
-        else
-        {
-            *(int*)result = *(const int*)value;
-        }
-    }
     else
     {
         LogError("Cannot clone option %s (not supported)", name);
@@ -89,10 +77,8 @@ static void* socketio_CloneOption(const char* name, const void* value)
 /*this function destroys an option previously created*/
 static void socketio_DestroyOption(const char* name, const void* value)
 {
-    if ((name != NULL) && (strcmp(name, OPTION_ENABLE_IPV6) == 0) && (value != NULL))
-    {
-        free((void*)value);
-    }
+    (void)name;
+    (void)value;
 }
 
 static OPTIONHANDLER_HANDLE socketio_retrieveoptions(CONCRETE_IO_HANDLE handle)
@@ -105,18 +91,10 @@ static OPTIONHANDLER_HANDLE socketio_retrieveoptions(CONCRETE_IO_HANDLE handle)
     }
     else
     {
-        SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)handle;
-
         result = OptionHandler_Create(socketio_CloneOption, socketio_DestroyOption, socketio_setoption);
         if (result == NULL)
         {
             LogError("unable to OptionHandler_Create");
-        }
-        else if (OptionHandler_AddOption(result, OPTION_ENABLE_IPV6, &socket_io_instance->enable_ipv6) != OPTIONHANDLER_OK)
-        {
-            LogError("failed retrieving options (failed adding enable_ipv6)");
-            OptionHandler_Destroy(result);
-            result = NULL;
         }
     }
 
@@ -847,14 +825,7 @@ int socketio_setoption(CONCRETE_IO_HANDLE socket_io, const char* optionName, con
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
 
-        if (strcmp(optionName, OPTION_ENABLE_IPV6) == 0)
-        {
-            /* Read when the connection is opened, so setting it after that has
-               no effect on an already resolved address. */
-            socket_io_instance->enable_ipv6 = *(const int*)value;
-            result = 0;
-        }
-        else if (strcmp(optionName, "tcp_keepalive") == 0)
+        if (strcmp(optionName, "tcp_keepalive") == 0)
         {
             struct tcp_keepalive keepAlive = socket_io_instance->keep_alive;
             keepAlive.onoff = *(int *)value;

@@ -156,21 +156,6 @@ static void* socketio_CloneOption(const char* name, const void* value)
                 }
             }
         }
-        else if (strcmp(name, OPTION_ENABLE_IPV6) == 0)
-        {
-            if (value == NULL)
-            {
-                LogError("Failed cloning option %s (value is NULL)", name);
-            }
-            else if ((result = malloc(sizeof(int))) == NULL)
-            {
-                LogError("Failed cloning option %s (malloc failed)", name);
-            }
-            else
-            {
-                *(int*)result = *(const int*)value;
-            }
-        }
         else
         {
             LogError("Cannot clone option %s (not suppported)", name);
@@ -188,8 +173,7 @@ static void socketio_DestroyOption(const char* name, const void* value)
 {
     if (name != NULL)
     {
-        if (((strcmp(name, OPTION_NET_INT_MAC_ADDRESS) == 0) ||
-            (strcmp(name, OPTION_ENABLE_IPV6) == 0)) && (value != NULL))
+        if ((strcmp(name, OPTION_NET_INT_MAC_ADDRESS) == 0) && (value != NULL))
         {
             free((void*)value);
         }
@@ -218,12 +202,6 @@ static OPTIONHANDLER_HANDLE socketio_retrieveoptions(CONCRETE_IO_HANDLE handle)
             OptionHandler_AddOption(result, OPTION_NET_INT_MAC_ADDRESS, socket_io_instance->target_mac_address) != OPTIONHANDLER_OK)
         {
             LogError("failed retrieving options (failed adding net_interface_mac_address)");
-            OptionHandler_Destroy(result);
-            result = NULL;
-        }
-        else if (OptionHandler_AddOption(result, OPTION_ENABLE_IPV6, &socket_io_instance->enable_ipv6) != OPTIONHANDLER_OK)
-        {
-            LogError("failed retrieving options (failed adding enable_ipv6)");
             OptionHandler_Destroy(result);
             result = NULL;
         }
@@ -1299,14 +1277,7 @@ int socketio_setoption(CONCRETE_IO_HANDLE socket_io, const char* optionName, con
     {
         SOCKET_IO_INSTANCE* socket_io_instance = (SOCKET_IO_INSTANCE*)socket_io;
 
-        if (strcmp(optionName, OPTION_ENABLE_IPV6) == 0)
-        {
-            /* Read when the connection is opened, so setting it after that has
-               no effect on an already resolved address. */
-            socket_io_instance->enable_ipv6 = *(const int*)value;
-            result = 0;
-        }
-        else if (strcmp(optionName, "tcp_keepalive") == 0)
+        if (strcmp(optionName, "tcp_keepalive") == 0)
         {
             result = setsockopt(socket_io_instance->socket, SOL_SOCKET, SO_KEEPALIVE, value, sizeof(int));
             if (result == -1) result = errno;
