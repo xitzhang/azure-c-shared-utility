@@ -341,8 +341,57 @@ static void umocktypes_free_const_SOCKETIO_CONFIG_ptr(SOCKETIO_CONFIG** value)
     free(*value);
 }
 
+static char* umocktypes_stringify_WS_OPEN_RESULT_DETAILED(const WS_OPEN_RESULT_DETAILED* value)
+{
+    char* result = NULL;
+    if (value != NULL)
+    {
+        char buffer[64];
+        int length = snprintf(buffer, sizeof(buffer), "{ result = %d }", (int)value->result);
+        if (length > 0)
+        {
+            result = (char*)malloc((size_t)length + 1);
+            if (result != NULL)
+            {
+                (void)memcpy(result, buffer, (size_t)length + 1);
+            }
+        }
+    }
+    return result;
+}
+
+static int umocktypes_are_equal_WS_OPEN_RESULT_DETAILED(const WS_OPEN_RESULT_DETAILED* left, const WS_OPEN_RESULT_DETAILED* right)
+{
+    return (left == NULL || right == NULL) ? -1 : left->result == right->result;
+}
+
+static int umocktypes_copy_WS_OPEN_RESULT_DETAILED(WS_OPEN_RESULT_DETAILED* destination, const WS_OPEN_RESULT_DETAILED* source)
+{
+    if (destination == NULL || source == NULL)
+    {
+        return __FAILURE__;
+    }
+    *destination = *source;
+    return 0;
+}
+
+static void umocktypes_free_WS_OPEN_RESULT_DETAILED(WS_OPEN_RESULT_DETAILED* value)
+{
+    (void)value;
+}
+
+static WS_OPEN_RESULT_DETAILED make_ws_open_result_detailed(WS_OPEN_RESULT result)
+{
+    WS_OPEN_RESULT_DETAILED detail = { result, 0, NULL, 0 };
+    return detail;
+}
+
+static const IO_OPEN_RESULT_DETAILED IO_OPEN_OK_DETAILED = { IO_OPEN_OK, 0 };
+static const IO_OPEN_RESULT_DETAILED IO_OPEN_ERROR_DETAILED = { IO_OPEN_ERROR, 0 };
+static const IO_OPEN_RESULT_DETAILED IO_OPEN_CANCELLED_DETAILED = { IO_OPEN_CANCELLED, 0 };
+
 // consumer mocks
-MOCK_FUNCTION_WITH_CODE(, void, test_on_ws_open_complete, void*, context, WS_OPEN_RESULT, ws_open_result)
+MOCK_FUNCTION_WITH_CODE(, void, test_on_ws_open_complete, void*, context, WS_OPEN_RESULT_DETAILED, ws_open_result)
 MOCK_FUNCTION_END()
 MOCK_FUNCTION_WITH_CODE(, void, test_on_ws_frame_received, void*, context, unsigned char, frame_type, const unsigned char*, buffer, size_t, size)
 MOCK_FUNCTION_END()
@@ -504,6 +553,7 @@ TEST_SUITE_INITIALIZE(suite_init)
     REGISTER_TYPE(IO_OPEN_RESULT, IO_OPEN_RESULT);
     REGISTER_TYPE(IO_SEND_RESULT, IO_SEND_RESULT);
     REGISTER_TYPE(WS_OPEN_RESULT, WS_OPEN_RESULT);
+    REGISTER_TYPE(WS_OPEN_RESULT_DETAILED, WS_OPEN_RESULT_DETAILED);
     REGISTER_TYPE(OPTIONHANDLER_RESULT, OPTIONHANDLER_RESULT);
     REGISTER_TYPE(WS_ERROR, WS_ERROR);
     REGISTER_TYPE(WS_SEND_FRAME_RESULT, WS_SEND_FRAME_RESULT);
@@ -1464,6 +1514,7 @@ TEST_FUNCTION(uws_client_destroy_fress_the_resources)
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(xio_destroy(TEST_IO_HANDLE));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(singlylinkedlist_destroy(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
@@ -1497,6 +1548,7 @@ TEST_FUNCTION(uws_client_destroy_with_2_protocols_fress_both_protocols)
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(xio_destroy(TEST_IO_HANDLE));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(singlylinkedlist_destroy(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
@@ -1526,6 +1578,7 @@ TEST_FUNCTION(uws_client_destroy_with_no_protocols_frees_all_other_resources)
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(xio_destroy(TEST_IO_HANDLE));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(singlylinkedlist_destroy(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
@@ -1552,7 +1605,7 @@ TEST_FUNCTION(uws_client_destroy_with_NULL_does_nothing)
 }
 
 /* Tests_SRS_UWS_CLIENT_01_021: [ `uws_client_destroy` shall perform a close action if the uws instance has already been open. ]*/
-/* Tests_SRS_UWS_CLIENT_01_034: [ `uws_client_close_async` shall obtain all the pending send frames by repetitively querying for the head of the pending IO list and freeing that head item. ]*/
+/* Pending sends are cancelled after destroying the underlying IO. */
 /* Tests_SRS_UWS_CLIENT_01_035: [ Obtaining the head of the pending send frames list shall be done by calling `singlylinkedlist_get_head_item`. ]*/
 TEST_FUNCTION(uws_client_destroy_also_performs_a_close)
 {
@@ -1565,17 +1618,19 @@ TEST_FUNCTION(uws_client_destroy_also_performs_a_close)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
-    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
+    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
+        .IgnoreArgument_on_io_close_complete()
+        .IgnoreArgument_callback_context();
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(xio_destroy(TEST_IO_HANDLE));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(singlylinkedlist_destroy(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
@@ -1608,6 +1663,7 @@ TEST_FUNCTION(uws_client_open_async_opens_the_underlying_IO)
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1755,6 +1811,7 @@ TEST_FUNCTION(uws_client_open_async_with_NULL_on_ws_open_complete_context_succee
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1788,6 +1845,7 @@ TEST_FUNCTION(uws_client_open_async_with_NULL_on_ws_frame_received_context_succe
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1821,6 +1879,7 @@ TEST_FUNCTION(uws_client_open_async_with_NULL_on_ws_peer_closed_context_succeeds
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1854,6 +1913,7 @@ TEST_FUNCTION(uws_client_open_async_with_NULL_on_ws_error_context_succeeds)
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1888,6 +1948,7 @@ TEST_FUNCTION(when_opening_the_underlying_io_fails_uws_client_open_async_fails)
     uws_client = uws_client_create("test_host", 444, "aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -1975,7 +2036,7 @@ TEST_FUNCTION(uws_client_open_async_while_waiting_for_CLOSE_frame_fails)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", test_on_ws_close_complete, NULL);
     umock_c_reset_all_calls();
@@ -2012,14 +2073,13 @@ TEST_FUNCTION(uws_client_close_async_closes_the_underlying_IO)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context();
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, (void*)0x4242);
@@ -2060,14 +2120,13 @@ TEST_FUNCTION(uws_client_close_async_with_NULL_close_complete_callback_is_allowe
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context();
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_async(uws_client, NULL, (void*)0x4242);
@@ -2094,14 +2153,13 @@ TEST_FUNCTION(uws_client_close_async_with_NULL_close_context_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context();
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
@@ -2128,7 +2186,7 @@ TEST_FUNCTION(when_the_underlying_xio_close_fails_then_uws_client_close_async_fa
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2136,6 +2194,7 @@ TEST_FUNCTION(when_the_underlying_xio_close_fails_then_uws_client_close_async_fa
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context()
         .SetReturn(1);
+    STRICT_EXPECTED_CALL(test_on_ws_error((void*)0x4244, WS_ERROR_CANNOT_CLOSE_UNDERLYING_IO));
 
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
@@ -2173,8 +2232,7 @@ TEST_FUNCTION(uws_client_close_async_without_open_fails)
     uws_client_destroy(uws_client);
 }
 
-/* Tests_SRS_UWS_CLIENT_01_033: [ `uws_client_close_async` after a `uws_client_close_async` shall fail and return a non-zero value. ]*/
-TEST_FUNCTION(uws_client_close_async_while_closing_fails)
+TEST_FUNCTION(uws_client_close_async_while_closing_forces_close)
 {
     // arrange
     TLSIO_CONFIG tlsio_config;
@@ -2189,19 +2247,22 @@ TEST_FUNCTION(uws_client_close_async_while_closing_fails)
     (void)uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
+        .IgnoreArgument_on_io_close_complete()
+        .IgnoreArgument_callback_context();
+
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
 
     // assert
-    ASSERT_ARE_NOT_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
     // cleanup
     uws_client_destroy(uws_client);
 }
 
-/* Tests_SRS_UWS_CLIENT_01_033: [ `uws_client_close_async` after a `uws_client_close_async` shall fail and return a non-zero value. ]*/
-TEST_FUNCTION(uws_client_close_async_while_WAITING_for_close_frame_fails)
+TEST_FUNCTION(uws_client_close_async_while_WAITING_for_close_frame_forces_close)
 {
     // arrange
     TLSIO_CONFIG tlsio_config;
@@ -2214,16 +2275,20 @@ TEST_FUNCTION(uws_client_close_async_while_WAITING_for_close_frame_fails)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", NULL, NULL);
     umock_c_reset_all_calls();
+
+    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
+        .IgnoreArgument_on_io_close_complete()
+        .IgnoreArgument_callback_context();
 
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
 
     // assert
-    ASSERT_ARE_NOT_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
     // cleanup
@@ -2258,7 +2323,7 @@ TEST_FUNCTION(uws_client_close_async_after_close_complete_fails)
     uws_client_destroy(uws_client);
 }
 
-/* Tests_SRS_UWS_CLIENT_01_034: [ `uws_client_close_async` shall obtain all the pending send frames by repetitively querying for the head of the pending IO list and freeing that head item. ]*/
+/* Pending sends are cancelled after the underlying IO closes, not while it may still call send callbacks. */
 /* Tests_SRS_UWS_CLIENT_01_035: [ Obtaining the head of the pending send frames list shall be done by calling `singlylinkedlist_get_head_item`. ]*/
 /* Tests_SRS_UWS_CLIENT_01_036: [ For each pending send frame the send complete callback shall be called with `UWS_SEND_FRAME_CANCELLED`. ]*/
 /* Tests_SRS_UWS_CLIENT_01_037: [ When indicating pending send frames as cancelled the callback context passed to the `on_ws_send_frame_complete` callback shall be the context given to `uws_client_send_frame_async`. ]*/
@@ -2276,7 +2341,7 @@ TEST_FUNCTION(uws_client_close_async_with_1_pending_send_frames_indicates_the_fr
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, NULL, 0, true, test_on_ws_send_frame_complete, (void*)0x4248);
     umock_c_reset_all_calls();
@@ -2284,14 +2349,6 @@ TEST_FUNCTION(uws_client_close_async_with_1_pending_send_frames_indicates_the_fr
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context();
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE))
-        .CaptureReturn(&list_item);
-    EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
-    STRICT_EXPECTED_CALL(singlylinkedlist_remove(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE, IGNORED_PTR_ARG))
-        .ValidateArgumentValue_item_handle(&list_item);
-    STRICT_EXPECTED_CALL(test_on_ws_send_frame_complete((void*)0x4248, WS_SEND_FRAME_CANCELLED));
-    EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
@@ -2300,11 +2357,28 @@ TEST_FUNCTION(uws_client_close_async_with_1_pending_send_frames_indicates_the_fr
     ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
+    umock_c_reset_all_calls();
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE))
+        .CaptureReturn(&list_item);
+    EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
+    STRICT_EXPECTED_CALL(singlylinkedlist_remove(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE, IGNORED_PTR_ARG))
+        .ValidateArgumentValue_item_handle(&list_item);
+    STRICT_EXPECTED_CALL(test_on_ws_send_frame_complete((void*)0x4248, WS_SEND_FRAME_CANCELLED));
+    EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
+    STRICT_EXPECTED_CALL(test_on_ws_close_complete(NULL));
+
+    // act
+    g_on_io_close_complete(g_on_io_close_complete_context);
+
+    // assert
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
     // cleanup
     uws_client_destroy(uws_client);
 }
 
-/* Tests_SRS_UWS_CLIENT_01_034: [ `uws_client_close_async` shall obtain all the pending send frames by repetitively querying for the head of the pending IO list and freeing that head item. ]*/
+/* Pending sends are cancelled after the underlying IO closes, not while it may still call send callbacks. */
 /* Tests_SRS_UWS_CLIENT_01_035: [ Obtaining the head of the pending send frames list shall be done by calling `singlylinkedlist_get_head_item`. ]*/
 /* Tests_SRS_UWS_CLIENT_01_036: [ For each pending send frame the send complete callback shall be called with `UWS_SEND_FRAME_CANCELLED`. ]*/
 /* Tests_SRS_UWS_CLIENT_01_037: [ When indicating pending send frames as cancelled the callback context passed to the `on_ws_send_frame_complete` callback shall be the context given to `uws_client_send_frame_async`. ]*/
@@ -2325,15 +2399,24 @@ TEST_FUNCTION(uws_client_close_async_with_2_pending_send_frames_indicates_the_fr
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
-    (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_frame_1, sizeof(test_frame_2), true, test_on_ws_send_frame_complete, (void*)0x4248);
+    (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_frame_1, sizeof(test_frame_1), true, test_on_ws_send_frame_complete, (void*)0x4248);
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_TEXT, test_frame_2, sizeof(test_frame_2), true, test_on_ws_send_frame_complete, (void*)0x4249);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context();
+
+    // act
+    result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
+
+    // assert
+    ASSERT_ARE_EQUAL(int, 0, result);
+    ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
+
+    umock_c_reset_all_calls();
     STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE))
         .CaptureReturn(&list_item_1);
     EXPECTED_CALL(singlylinkedlist_item_get_value(IGNORED_PTR_ARG));
@@ -2349,12 +2432,12 @@ TEST_FUNCTION(uws_client_close_async_with_2_pending_send_frames_indicates_the_fr
     STRICT_EXPECTED_CALL(test_on_ws_send_frame_complete((void*)0x4249, WS_SEND_FRAME_CANCELLED));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
+    STRICT_EXPECTED_CALL(test_on_ws_close_complete(NULL));
 
     // act
-    result = uws_client_close_async(uws_client, test_on_ws_close_complete, NULL);
+    g_on_io_close_complete(g_on_io_close_complete_context);
 
     // assert
-    ASSERT_ARE_EQUAL(int, 0, result);
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
 
     // cleanup
@@ -2383,7 +2466,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_sends_the_close_frame)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2400,7 +2483,6 @@ TEST_FUNCTION(uws_client_close_handshake_async_sends_the_close_frame)
         .ValidateArgumentBuffer(2, close_frame, sizeof(close_frame));
     STRICT_EXPECTED_CALL(BUFFER_delete(IGNORED_PTR_ARG))
         .ValidateArgumentValue_handle(&buffer_handle);
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_handshake_async(uws_client, 1002, "", test_on_ws_close_complete, (void*)0x4445);
@@ -2444,7 +2526,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_with_NULL_close_complete_callback
     tlsio_config.port = 444;
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2461,7 +2543,6 @@ TEST_FUNCTION(uws_client_close_handshake_async_with_NULL_close_complete_callback
         .ValidateArgumentBuffer(2, close_frame, sizeof(close_frame));
     STRICT_EXPECTED_CALL(BUFFER_delete(IGNORED_PTR_ARG))
         .ValidateArgumentValue_handle(&buffer_handle);
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_handshake_async(uws_client, 1002, "", NULL, NULL);
@@ -2491,7 +2572,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_with_NULL_context_is_allowed)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2508,7 +2589,6 @@ TEST_FUNCTION(uws_client_close_handshake_async_with_NULL_context_is_allowed)
         .ValidateArgumentBuffer(2, close_frame, sizeof(close_frame));
     STRICT_EXPECTED_CALL(BUFFER_delete(IGNORED_PTR_ARG))
         .ValidateArgumentValue_handle(&buffer_handle);
-    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     result = uws_client_close_handshake_async(uws_client, 1002, "", test_on_ws_close_complete, NULL);
@@ -2538,7 +2618,7 @@ TEST_FUNCTION(when_xio_send_fails_uws_client_close_handshake_async_fails)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -2608,7 +2688,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_when_already_SENDING_CLOSE_frame_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -2639,7 +2719,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_when_already_CLOSING_underlying_I
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     g_on_io_send_complete(g_on_io_send_complete_context, IO_SEND_OK);
@@ -2670,7 +2750,7 @@ TEST_FUNCTION(uws_client_close_handshake_async_while_WAITING_for_close_frame_fai
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", NULL, NULL);
     umock_c_reset_all_calls();
@@ -2702,10 +2782,10 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_ERROR_triggers_the_ws_open_com
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_UNDERLYING_IO_OPEN_FAILED));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_UNDERLYING_IO_OPEN_FAILED)));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2727,9 +2807,10 @@ TEST_FUNCTION(uws_client_open_async_after_WS_OPEN_ERROR_UNDERLYING_IO_OPEN_FAILE
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_ERROR_DETAILED);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2764,7 +2845,7 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_NULL_context_does_nothing)
     umock_c_reset_all_calls();
 
     // act
-    g_on_io_open_complete(NULL, IO_OPEN_OK);
+    g_on_io_open_complete(NULL, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2787,10 +2868,11 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_CANCELLED_triggers_the_ws_open
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_UNDERLYING_IO_OPEN_CANCELLED));
+    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_UNDERLYING_IO_OPEN_CANCELLED)));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2812,9 +2894,10 @@ TEST_FUNCTION(uws_client_open_async_after_WS_OPEN_ERROR_UNDERLYING_IO_OPEN_CANCE
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_CANCELLED_DETAILED);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -2904,7 +2987,7 @@ TEST_FUNCTION(on_underlying_io_open_complete_with_OK_prepares_and_sends_the_WebS
     EXPECTED_CALL(free(IGNORED_PTR_ARG)); // request headers
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2939,10 +3022,11 @@ TEST_FUNCTION(when_base64_encode_fails_on_underlying_io_open_complete_triggers_t
     STRICT_EXPECTED_CALL(Base64_Encode_Bytes(IGNORED_PTR_ARG, 16))
         .ValidateArgumentBuffer(1, expected_nonce, 16)
         .SetReturn(NULL);
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BASE64_ENCODE_FAILED));
+    STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BASE64_ENCODE_FAILED)));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -2984,12 +3068,12 @@ TEST_FUNCTION(when_allocating_memory_for_the_websocket_upgrade_request_fails_the
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
         .SetReturn(NULL);
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_NOT_ENOUGH_MEMORY));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_NOT_ENOUGH_MEMORY)));
     STRICT_EXPECTED_CALL(STRING_delete(BASE64_ENCODED_STRING));
     STRICT_EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG)); // empty request headers
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -3026,11 +3110,12 @@ TEST_FUNCTION(uws_client_open_async_after_WS_OPEN_ERROR_NOT_ENOUGH_MEMORY_succee
         .ValidateArgumentBuffer(1, expected_nonce, 16);
     EXPECTED_CALL(gballoc_malloc(IGNORED_NUM_ARG))
         .SetReturn(NULL);
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_NOT_ENOUGH_MEMORY));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_NOT_ENOUGH_MEMORY)));
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -3086,13 +3171,13 @@ TEST_FUNCTION(when_sending_the_upgrade_request_fails_the_error_WS_OPEN_ERROR_CAN
         .IgnoreArgument_size()
         .SetReturn(1);
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_CANNOT_SEND_UPGRADE_REQUEST));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_CANNOT_SEND_UPGRADE_REQUEST)));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
     STRICT_EXPECTED_CALL(STRING_delete(BASE64_ENCODED_STRING));
     EXPECTED_CALL(gballoc_free(IGNORED_PTR_ARG));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -3140,9 +3225,10 @@ TEST_FUNCTION(uws_client_open_async_after_WS_OPEN_ERROR_CANNOT_SEND_UPGRADE_REQU
         .IgnoreArgument_size()
         .SetReturn(1);
 
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -3174,14 +3260,14 @@ TEST_FUNCTION(when_sending_the_upgrade_request_fails_the_error_WS_OPEN_ERROR_MUL
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_MULTIPLE_UNDERLYING_IO_OPEN_EVENTS));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_MULTIPLE_UNDERLYING_IO_OPEN_EVENTS)));
 
     // act
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     // assert
     ASSERT_ARE_EQUAL(char_ptr, umock_c_get_expected_calls(), umock_c_get_actual_calls());
@@ -3203,12 +3289,13 @@ TEST_FUNCTION(uws_client_open_async_after_WS_OPEN_ERROR_MULTIPLE_UNDERLYING_IO_O
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_MULTIPLE_UNDERLYING_IO_OPEN_EVENTS));
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_MULTIPLE_UNDERLYING_IO_OPEN_EVENTS)));
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -3249,12 +3336,12 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_full_reply_after_the_upgrad
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3280,13 +3367,13 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_reply_with_a_status_code_di
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BAD_RESPONSE_STATUS));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BAD_RESPONSE_STATUS)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3312,13 +3399,13 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_reply_with_status_100_indic
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BAD_RESPONSE_STATUS));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BAD_RESPONSE_STATUS)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3345,10 +3432,11 @@ TEST_FUNCTION(open_after_a_bad_status_is_decoded_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -3388,16 +3476,16 @@ TEST_FUNCTION(after_a_bad_status_code_a_subsequent_open_completes)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_bad_upgrade_response, sizeof(test_bad_upgrade_response) - 1);
 
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3423,13 +3511,13 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_an_empty_reply_indicates_an_o
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3455,13 +3543,13 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_an_imcomplete_HTTP_1_1__reply
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3487,13 +3575,13 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_a_complete_HTTP_version_but_n
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BAD_UPGRADE_RESPONSE)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3518,12 +3606,12 @@ TEST_FUNCTION(open_completes_when_response_has_more_spaces_in_it)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3548,12 +3636,12 @@ TEST_FUNCTION(open_completes_when_response_has_more_spaces_in_it_after_the_statu
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3578,12 +3666,12 @@ TEST_FUNCTION(open_completes_when_a_header_is_present_in_the_response)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3608,14 +3696,14 @@ TEST_FUNCTION(when_allocating_memory_for_the_received_bytes_fails_on_underlying_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG))
         .SetReturn(NULL);
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_NOT_ENOUGH_MEMORY));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_NOT_ENOUGH_MEMORY)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3641,7 +3729,7 @@ TEST_FUNCTION(when_only_a_byte_is_received_no_open_complete_is_indicated)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
 
     umock_c_reset_all_calls();
 
@@ -3695,11 +3783,11 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_NULL_buffer_indicates_an_open
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_INVALID_BYTES_RECEIVED_ARGUMENTS));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_INVALID_BYTES_RECEIVED_ARGUMENTS)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, NULL, sizeof(test_upgrade_response) - 1);
@@ -3724,11 +3812,11 @@ TEST_FUNCTION(on_underlying_io_bytes_received_with_zero_size_indicates_an_open_c
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_INVALID_BYTES_RECEIVED_ARGUMENTS));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_INVALID_BYTES_RECEIVED_ARGUMENTS)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, 0);
@@ -3756,7 +3844,7 @@ TEST_FUNCTION(on_underlying_io_bytes_received_before_underlying_io_open_complete
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_BYTES_RECEIVED_BEFORE_UNDERLYING_OPEN));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_BYTES_RECEIVED_BEFORE_UNDERLYING_OPEN)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
@@ -3781,14 +3869,14 @@ TEST_FUNCTION(when_allocating_memory_for_a_second_byte_fails_open_complete_is_in
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, 1);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG))
         .SetReturn(NULL);
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_NOT_ENOUGH_MEMORY));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_NOT_ENOUGH_MEMORY)));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response + 1, 1);
@@ -3812,7 +3900,7 @@ void when_only_n_bytes_are_received_from_the_response_no_open_complete_is_indica
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
@@ -3853,11 +3941,11 @@ TEST_FUNCTION(when_1_extra_byte_is_received_the_open_complete_is_properly_indica
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
 
     // act
@@ -3898,7 +3986,7 @@ TEST_FUNCTION(when_a_1_byte_binary_frame_is_received_it_shall_be_indicated_to_th
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -3935,7 +4023,7 @@ TEST_FUNCTION(when_a_1_byte_text_frame_is_received_it_shall_be_indicated_to_the_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -3969,7 +4057,7 @@ TEST_FUNCTION(when_a_0_bytes_binary_frame_is_received_it_shall_be_indicated_to_t
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4003,7 +4091,7 @@ TEST_FUNCTION(when_a_0_bytes_text_frame_is_received_it_shall_be_indicated_to_the
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4057,7 +4145,7 @@ TEST_FUNCTION(when_a_fragmented_text_frame_is_received_it_shall_be_indicated_to_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4119,7 +4207,7 @@ TEST_FUNCTION(when_a_fragmented_binary_frame_is_received_it_shall_be_indicated_t
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4160,7 +4248,7 @@ TEST_FUNCTION(when_a_fragmented_frame_is_interleaved_within_another_fragmented_f
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4199,7 +4287,7 @@ TEST_FUNCTION(when_a_fragmented_frame_is_received_all_at_once_the_frame_is_indic
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4260,7 +4348,7 @@ TEST_FUNCTION(pong_frame_can_be_injected_in_middle_of_fragmented_message)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4317,7 +4405,7 @@ TEST_FUNCTION(when_a_fragmented_control_frame_is_received_there_is_an_error)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4357,7 +4445,7 @@ TEST_FUNCTION(when_a_125_bytes_binary_frame_is_received_it_shall_be_indicated_to
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4396,7 +4484,7 @@ TEST_FUNCTION(when_a_126_bytes_binary_frame_is_received_it_shall_be_indicated_to
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4435,7 +4523,7 @@ TEST_FUNCTION(when_a_127_bytes_binary_frame_is_received_it_shall_be_indicated_to
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4478,7 +4566,7 @@ TEST_FUNCTION(when_a_65535_bytes_binary_frame_is_received_it_shall_be_indicated_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4528,7 +4616,7 @@ TEST_FUNCTION(when_a_65536_bytes_binary_frame_is_received_it_shall_be_indicated_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4578,7 +4666,7 @@ TEST_FUNCTION(when_a_65537_bytes_binary_frame_is_received_it_shall_be_indicated_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4612,7 +4700,7 @@ TEST_FUNCTION(when_a_0_byte_binary_frame_is_received_with_16_bit_length_an_error
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4650,7 +4738,7 @@ TEST_FUNCTION(when_a_125_byte_binary_frame_is_received_with_16_bit_length_an_err
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4682,7 +4770,7 @@ TEST_FUNCTION(when_a_0_byte_binary_frame_is_received_with_64_bit_length_an_error
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4730,7 +4818,7 @@ TEST_FUNCTION(when_a_65535_byte_binary_frame_is_received_with_64_bit_length_an_e
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4763,7 +4851,7 @@ TEST_FUNCTION(check_for_16_bit_length_too_low_is_done_as_soon_as_length_is_recei
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4795,7 +4883,7 @@ TEST_FUNCTION(check_for_64_bit_length_too_low_is_done_as_soon_as_length_is_recei
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4843,7 +4931,7 @@ TEST_FUNCTION(when_the_highest_bit_is_set_in_a_64_bit_length_frame_an_error_is_i
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4875,7 +4963,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_received_frame_bytes_fails_an_error
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -4911,7 +4999,7 @@ TEST_FUNCTION(when_1_byte_is_received_together_with_the_upgrade_request_and_one_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)upgrade_response_frame, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -4949,11 +5037,11 @@ TEST_FUNCTION(when_a_complete_frame_is_received_together_with_the_upgrade_reques
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
     STRICT_EXPECTED_CALL(test_on_ws_frame_received((void*)0x4243, WS_FRAME_TYPE_BINARY, IGNORED_PTR_ARG, 0))
         .IgnoreArgument_buffer();
 
@@ -4989,11 +5077,11 @@ TEST_FUNCTION(when_a_1_byte_complete_frame_is_received_together_with_the_upgrade
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
     STRICT_EXPECTED_CALL(test_on_ws_frame_received((void*)0x4243, WS_FRAME_TYPE_BINARY, expected_frame_payload, sizeof(expected_frame_payload)))
         .ValidateArgumentBuffer(3, expected_frame_payload, sizeof(expected_frame_payload));
 
@@ -5030,11 +5118,11 @@ TEST_FUNCTION(when_2_complete_frames_are_received_together_with_the_upgrade_requ
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     EXPECTED_CALL(gballoc_realloc(IGNORED_PTR_ARG, IGNORED_NUM_ARG));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_OK));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_OK)));
     STRICT_EXPECTED_CALL(test_on_ws_frame_received((void*)0x4243, WS_FRAME_TYPE_TEXT, IGNORED_PTR_ARG, 1))
         .ValidateArgumentBuffer(3, "a", 1);
     STRICT_EXPECTED_CALL(test_on_ws_frame_received((void*)0x4243, WS_FRAME_TYPE_BINARY, IGNORED_PTR_ARG, 0))
@@ -5071,7 +5159,7 @@ TEST_FUNCTION(when_a_masked_frame_is_received_an_error_is_indicated_and_connecti
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5123,7 +5211,7 @@ TEST_FUNCTION(when_a_masked_frame_is_received_and_encoding_the_close_frame_fails
         .CaptureReturn(&buffer_handle);
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5163,7 +5251,7 @@ TEST_FUNCTION(when_a_masked_frame_is_received_and_sending_the_encoded_CLOSE_fram
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5221,7 +5309,7 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_while_in_open_the_code_is_reported_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5274,7 +5362,7 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_without_a_close_code_while_in_open_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5325,7 +5413,7 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_extra_bytes_the_bytes_are_pass
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5368,14 +5456,13 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_a_malformed_UTF8_text_the_conn
     UWS_CLIENT_HANDLE uws_client;
     const char test_upgrade_response[] = "HTTP/1.1 101 Switching Protocols\r\n\r\n";
     unsigned char close_frame[] = { 0x88, 0x03, 0x03, 0xEA, 0xDF };
-    uint16_t expected_close_code = 1002;
 
     tlsio_config.hostname = "test_host";
     tlsio_config.port = 444;
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5386,8 +5473,6 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_a_malformed_UTF8_text_the_conn
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_callback_context()
         .IgnoreArgument_on_io_close_complete();
-    STRICT_EXPECTED_CALL(test_on_ws_peer_closed((void*)0x4301, IGNORED_PTR_ARG, IGNORED_PTR_ARG, 0))
-        .ValidateArgumentBuffer(2, &expected_close_code, sizeof(expected_close_code));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
@@ -5416,7 +5501,7 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_while_in_open_and_encoding_the_outg
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5458,7 +5543,7 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_while_in_open_and_sending_the_outgo
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -5510,7 +5595,7 @@ TEST_FUNCTION(sending_after_a_close_is_received_does_not_send_anything)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -5557,7 +5642,7 @@ TEST_FUNCTION(uws_client_send_frame_async_with_NULL_buffer_and_non_zero_size_fai
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5643,7 +5728,7 @@ TEST_FUNCTION(uws_client_send_frame_async_when_waiting_for_upgrade_response_fail
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     // act
@@ -5690,7 +5775,7 @@ TEST_FUNCTION(uws_client_send_frame_async_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5740,7 +5825,7 @@ TEST_FUNCTION(uws_send_text_frame_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5788,7 +5873,7 @@ TEST_FUNCTION(when_allocating_memory_for_the_new_sent_item_fails_uws_client_send
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5821,7 +5906,7 @@ TEST_FUNCTION(when_encoding_the_frame_fails_uws_client_send_frame_async_fails)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5864,7 +5949,7 @@ TEST_FUNCTION(when_xio_send_fails_uws_client_send_frame_async_fails)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5926,7 +6011,7 @@ TEST_FUNCTION(when_xio_send_fails_uws_client_send_frame_async_fails_message_remo
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -5987,7 +6072,7 @@ TEST_FUNCTION(when_adding_the_item_to_the_list_fails_uws_client_send_frame_async
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -6035,7 +6120,7 @@ TEST_FUNCTION(uws_client_send_frame_async_with_NULL_complete_callback_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     umock_c_reset_all_calls();
 
@@ -6086,7 +6171,7 @@ TEST_FUNCTION(on_underlying_io_send_complete_with_OK_indicates_the_frame_as_sent
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6121,7 +6206,7 @@ TEST_FUNCTION(when_removing_the_sent_framefrom_the_list_fails_then_an_error_is_i
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6156,7 +6241,7 @@ TEST_FUNCTION(on_underlying_io_send_complete_with_ERROR_indicates_the_frame_with
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6191,7 +6276,7 @@ TEST_FUNCTION(on_underlying_io_send_complete_with_CANCELLED_indicates_the_frame_
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6226,7 +6311,7 @@ TEST_FUNCTION(on_underlying_io_send_complete_with_NULL_context_does_nothing)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6255,7 +6340,7 @@ TEST_FUNCTION(on_underlying_io_send_complete_with_an_unknown_result_indicates_an
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response));
     (void)uws_client_send_frame_async(uws_client, WS_FRAME_TYPE_BINARY, test_payload, sizeof(test_payload), true, test_on_ws_send_frame_complete, (void*)0x4245);
     umock_c_reset_all_calls();
@@ -6304,6 +6389,7 @@ TEST_FUNCTION(uws_client_dowork_calls_the_underlying_io_dowork)
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_dowork(TEST_IO_HANDLE));
 
     // act
@@ -6357,7 +6443,7 @@ TEST_FUNCTION(on_underlying_io_error_while_opening_underlying_io_indicates_an_op
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_UNDERLYING_IO_ERROR));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_UNDERLYING_IO_ERROR)));
 
     // act
     g_on_io_error(g_on_io_error_context);
@@ -6381,11 +6467,11 @@ TEST_FUNCTION(on_underlying_io_error_while_waiting_for_upgrade_response_indicate
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
-    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, WS_OPEN_ERROR_UNDERLYING_IO_ERROR));
+    STRICT_EXPECTED_CALL(test_on_ws_open_complete((void*)0x4242, make_ws_open_result_detailed(WS_OPEN_ERROR_UNDERLYING_IO_ERROR)));
 
     // act
     g_on_io_error(g_on_io_error_context);
@@ -6412,7 +6498,7 @@ TEST_FUNCTION(on_underlying_io_error_while_OPEN_indicates_an_error)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -6442,12 +6528,13 @@ TEST_FUNCTION(on_underlying_io_error_while_CLOSING_indicates_an_error)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
 
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, NULL, NULL));
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     g_on_io_error(g_on_io_error_context);
@@ -6474,12 +6561,13 @@ TEST_FUNCTION(open_after_error_during_sending_close_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     g_on_io_error(g_on_io_error_context);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -6514,7 +6602,7 @@ TEST_FUNCTION(on_underlying_io_error_while_CLOSING_underlying_io_indicates_the_c
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     g_on_io_send_complete(g_on_io_send_complete_context, IO_SEND_OK);
@@ -6523,6 +6611,7 @@ TEST_FUNCTION(on_underlying_io_error_while_CLOSING_underlying_io_indicates_the_c
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_callback_context()
         .IgnoreArgument_on_io_close_complete();
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     g_on_io_error(g_on_io_error_context);
@@ -6549,13 +6638,14 @@ TEST_FUNCTION(open_after_error_during_closing_underlying_io_succeeds)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     g_on_io_send_complete(g_on_io_send_complete_context, IO_SEND_OK);
     g_on_io_error(g_on_io_error_context);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -6589,7 +6679,7 @@ TEST_FUNCTION(on_underlying_io_error_while_CLOSING_due_to_local_initiated_close)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", test_on_ws_close_complete, (void*)0x6666);
     umock_c_reset_all_calls();
@@ -6598,6 +6688,7 @@ TEST_FUNCTION(on_underlying_io_error_while_CLOSING_due_to_local_initiated_close)
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context()
         .SetReturn(1);
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(test_on_ws_close_complete((void*)0x6666));
 
     // act
@@ -6626,7 +6717,7 @@ TEST_FUNCTION(on_underlying_io_close_sent_with_NULL_context_does_nothing)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -6655,7 +6746,7 @@ TEST_FUNCTION(on_underlying_io_close_sent_when_a_CLOSE_was_sent_closes_the_under
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -6689,7 +6780,7 @@ TEST_FUNCTION(when_xio_close_fails_in_on_underlying_io_close_sent_and_CLOSE_init
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -6698,6 +6789,7 @@ TEST_FUNCTION(when_xio_close_fails_in_on_underlying_io_close_sent_and_CLOSE_init
         .IgnoreArgument_on_io_close_complete()
         .IgnoreArgument_callback_context()
         .SetReturn(1);
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     g_on_io_send_complete(g_on_io_send_complete_context, IO_SEND_OK);
@@ -6725,7 +6817,7 @@ TEST_FUNCTION(when_xio_close_fails_in_on_underlying_io_close_sent_and_CLOSE_init
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
@@ -6737,6 +6829,7 @@ TEST_FUNCTION(when_xio_close_fails_in_on_underlying_io_close_sent_and_CLOSE_init
     g_on_io_send_complete(g_on_io_send_complete_context, IO_SEND_OK);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -6778,7 +6871,7 @@ TEST_FUNCTION(when_a_PING_frame_was_received_a_PONG_frame_is_sent)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -6829,7 +6922,7 @@ TEST_FUNCTION(when_a_PING_frame_was_received_with_some_payload_a_PONG_frame_is_s
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -6875,7 +6968,7 @@ TEST_FUNCTION(when_a_PING_frame_is_received_after_a_close_frame_no_pong_is_sent)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -7404,7 +7497,7 @@ TEST_FUNCTION(underlying_io_close_after_a_send_close_frame_failed_puts_the_uws_i
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -7422,6 +7515,7 @@ TEST_FUNCTION(underlying_io_close_after_a_send_close_frame_failed_puts_the_uws_i
     g_on_io_close_complete(g_on_io_close_complete_context);
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(get_time(NULL));
     STRICT_EXPECTED_CALL(xio_open(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_on_io_open_complete()
         .IgnoreArgument_on_io_open_complete_context()
@@ -7456,7 +7550,7 @@ TEST_FUNCTION(underlying_io_close_due_to_CLOSE_frame_being_received_doe_not_trig
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -7472,6 +7566,7 @@ TEST_FUNCTION(underlying_io_close_due_to_CLOSE_frame_being_received_doe_not_trig
 
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     g_on_io_close_complete(g_on_io_close_complete_context);
@@ -7499,7 +7594,7 @@ TEST_FUNCTION(underlying_io_close_complete_with_NULL_context_does_nothing)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     umock_c_reset_all_calls();
 
@@ -7542,12 +7637,13 @@ TEST_FUNCTION(when_close_complete_is_called_the_user_callback_is_triggered)
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", test_on_ws_close_complete, (void*)0x4444);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
 
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
     STRICT_EXPECTED_CALL(test_on_ws_close_complete((void*)0x4444));
 
     // act
@@ -7575,11 +7671,12 @@ TEST_FUNCTION(when_close_complete_is_called_and_the_user_callback_is_NULL_no_cal
 
     uws_client = uws_client_create("test_host", 444, "/aaa", true, protocols, sizeof(protocols) / sizeof(protocols[0]));
     (void)uws_client_open_async(uws_client, test_on_ws_open_complete, (void*)0x4242, test_on_ws_frame_received, (void*)0x4243, test_on_ws_peer_closed, (void*)0x4301, test_on_ws_error, (void*)0x4244);
-    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK);
+    g_on_io_open_complete(g_on_io_open_complete_context, IO_OPEN_OK_DETAILED);
     g_on_bytes_received(g_on_bytes_received_context, (const unsigned char*)test_upgrade_response, sizeof(test_upgrade_response) - 1);
     (void)uws_client_close_handshake_async(uws_client, 1002, "", NULL, NULL);
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));
     umock_c_reset_all_calls();
+    STRICT_EXPECTED_CALL(singlylinkedlist_get_head_item(TEST_SINGLYLINKEDSINGLYLINKEDLIST_HANDLE));
 
     // act
     g_on_io_close_complete(g_on_io_close_complete_context);
