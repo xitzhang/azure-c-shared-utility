@@ -194,9 +194,9 @@ XX**SRS_UWS_CLIENT_01_398: [** `on_ws_close_complete_context` shall also be allo
 XX**SRS_UWS_CLIENT_01_031: [** `uws_client_close_async` shall close the connection by calling `xio_close` while passing as argument the IO handle created in `uws_client_create`. **]**  
 XX**SRS_UWS_CLIENT_01_368: [** The callback `on_underlying_io_close` shall be passed as argument to `xio_close`. **]**  
 XX**SRS_UWS_CLIENT_01_395: [** If `xio_close` fails, `uws_client_close_async` shall fail and return a non-zero value. **]**  
-XX**SRS_UWS_CLIENT_01_032: [** `uws_client_close_async` when no open action has been issued shall fail and return a non-zero value. **]**  
-XX**SRS_UWS_CLIENT_01_033: [** `uws_client_close_async` after a `uws_client_close_async` shall fail and return a non-zero value. **]**  
-XX**SRS_UWS_CLIENT_01_034: [** `uws_client_close_async` shall obtain all the pending send frames by repetitively querying for the head of the pending IO list and freeing that head item. **]**  
+XX**SRS_UWS_CLIENT_01_032: [** `uws_client_close_async` when the client is already CLOSED shall fail and return a non-zero value. **]**  
+XX**SRS_UWS_CLIENT_01_033: [** `uws_client_close_async` while the client is CLOSING, including while waiting for a close-handshake response, shall attempt to close the underlying IO. **]**  
+XX**SRS_UWS_CLIENT_01_034: [** When underlying IO closure completes, the client shall obtain all remaining pending send frames by repetitively querying for the head of the pending IO list and freeing that head item, before invoking the user's close-complete callback, if any. **]**  
 XX**SRS_UWS_CLIENT_01_035: [** Obtaining the head of the pending send frames list shall be done by calling `singlylinkedlist_get_head_item`. **]**  
 XX**SRS_UWS_CLIENT_01_036: [** For each pending send frame the send complete callback shall be called with `UWS_SEND_FRAME_CANCELLED`. **]**  
 XX**SRS_UWS_CLIENT_01_037: [** When indicating pending send frames as cancelled the callback context passed to the `on_ws_send_frame_complete` callback shall be the context given to `uws_client_send_frame_async`. **]**
