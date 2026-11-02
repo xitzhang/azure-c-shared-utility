@@ -5595,14 +5595,14 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_extra_bytes_the_bytes_are_pass
 }
 
 /* Tests_SRS_UWS_CLIENT_01_237: [ Following the 2-byte integer, the body MAY contain UTF-8-encoded data with value /reason/, the interpretation of which is not defined by this specification. ]*/
-TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_a_malformed_UTF8_text_the_connection_is_closed)
+/* Tests_SRS_UWS_CLIENT_01_460: [ A CLOSE frame with a malformed UTF-8 reason shall close the underlying I/O without calling on_ws_peer_closed. ]*/
+TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_a_malformed_UTF8_text_the_connection_is_closed_without_peer_callback)
 {
     // arrange
     TLSIO_CONFIG tlsio_config;
     UWS_CLIENT_HANDLE uws_client;
     const char test_upgrade_response[] = "HTTP/1.1 101 Switching Protocols\r\n\r\n";
     unsigned char close_frame[] = { 0x88, 0x03, 0x03, 0xEA, 0xDF };
-    uint16_t expected_close_code = 1002;
 
     tlsio_config.hostname = "test_host";
     tlsio_config.port = 444;
@@ -5620,8 +5620,6 @@ TEST_FUNCTION(when_a_CLOSE_frame_is_received_with_a_malformed_UTF8_text_the_conn
     STRICT_EXPECTED_CALL(xio_close(TEST_IO_HANDLE, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument_callback_context()
         .IgnoreArgument_on_io_close_complete();
-    STRICT_EXPECTED_CALL(test_on_ws_peer_closed((void*)0x4301, IGNORED_PTR_ARG, IGNORED_PTR_ARG, 0))
-        .ValidateArgumentBuffer(2, &expected_close_code, sizeof(expected_close_code));
 
     // act
     g_on_bytes_received(g_on_bytes_received_context, close_frame, sizeof(close_frame));

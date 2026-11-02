@@ -364,7 +364,7 @@ XX**SRS_UWS_CLIENT_01_385: [** If the state of the uws instance is OPEN, the rec
 XX**SRS_UWS_CLIENT_01_418: [** If allocating memory for the bytes accumulated for decoding WebSocket frames fails, an error shall be indicated by calling the `on_ws_error` callback with `WS_ERROR_NOT_ENOUGH_MEMORY`. **]**  
 XX**SRS_UWS_CLIENT_01_386: [** When a WebSocket data frame is decoded succesfully it shall be indicated via the callback `on_ws_frame_received`. **]**  
 XX**SRS_UWS_CLIENT_01_419: [** If there is an error decoding the WebSocket frame, an error shall be indicated by calling the `on_ws_error` callback with `WS_ERROR_BAD_FRAME_RECEIVED`. **]**  
-XX**SRS_UWS_CLIENT_01_460: [** When a CLOSE frame is received the callback `on_ws_peer_closed` passed to `uws_client_open_async` shall be called, while passing to it the argument `on_ws_peer_closed_context`. **]**  
+XX**SRS_UWS_CLIENT_01_460: [** When a valid CLOSE frame is received while OPEN, the callback `on_ws_peer_closed` passed to `uws_client_open_async` shall be called, while passing to it the argument `on_ws_peer_closed_context`. A CLOSE frame with a malformed UTF-8 reason shall close the underlying I/O without calling `on_ws_peer_closed`. **]**
 XX**SRS_UWS_CLIENT_01_461: [** The argument `close_code` shall be set to point to the code extracted from the CLOSE frame. **]**  
 XX**SRS_UWS_CLIENT_01_462: [** If no code can be extracted then `close_code` shall be NULL. **]**  
 XX**SRS_UWS_CLIENT_01_463: [** The extra bytes (besides the close code) shall be passed to the `on_ws_peer_closed` callback by using `extra_data` and `extra_data_length`. **]**  
